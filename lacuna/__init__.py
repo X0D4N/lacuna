@@ -19,6 +19,9 @@ from .hardware import HardwareTier, detect_hardware
 from .oracle import Oracle
 from .pager import PagedWeightStore, LacWriter
 from .quant import (
+    POLICY_EXACT,
+    POLICY_EXTREME,
+    PRECISION_POLICIES,
     pack_q2,
     pack_q4,
     pack_ternary,
@@ -26,18 +29,23 @@ from .quant import (
     unpack_q2,
     unpack_q4,
     unpack_ternary,
+    validate_policy,
 )
 from .scheduler import OverlapScheduler, simulate_overlap
-from .speculate import speculative_generate
+from .speculate import speculative_generate, speculative_tree_generate
 
 __all__ = [
     "__version__",
     "Engine",
     "HardwareTier",
+    "LacunaEngine",
     "Oracle",
     "OverlapScheduler",
     "PagedWeightStore",
     "LacWriter",
+    "POLICY_EXACT",
+    "POLICY_EXTREME",
+    "PRECISION_POLICIES",
     "detect_hardware",
     "pack_q2",
     "pack_q4",
@@ -45,7 +53,9 @@ __all__ = [
     "roundtrip_max_error",
     "simulate_overlap",
     "speculative_generate",
+    "speculative_tree_generate",
     "unpack_q2",
     "unpack_q4",
     "unpack_ternary",
+    "validate_policy",
 ]

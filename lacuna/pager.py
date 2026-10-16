@@ -2,12 +2,17 @@
 
 ``.lac`` file layout (little-endian)::
 
-    header:  magic b'LAC1' | u16 version | u32 page_size | u32 n_pages | u64 table_offset
+    header:  magic b'LAC1' | u16 version | u32 page_size | u32 n_pages |
+             u64 table_offset | u8 precision_policy | 3 reserved bytes   (v2)
     pages:   page_header + packed payload, repeated
     table:   n_pages entries of
              u32 tensor_id | u16 layer | u32 row_start | u32 row_end |
              u8 precision | u8 reserved | u64 file_offset
     names:   u32 n_names, then for each: u32 len + bytes (tensor id -> name)
+
+precision_policy ids: 0 = legacy/unspecified, 1 = exact, 2 = extreme.
+v1 files (written before policies existed) have no policy byte and are read as
+"extreme" — v1 always used adaptive tiering.
 
 Each page payload starts with its own header so pages are self-describing::
 
@@ -37,9 +42,15 @@ import numpy as np
 from . import quant as _q
 
 MAGIC = b"LAC1"
-VERSION = 1
-HEADER_FMT = "<4sHIIQ"
+VERSION = 2
+# v1 header (no policy byte). Kept for reading files written before policies.
+HEADER_FMT_V1 = "<4sHIIQ"
+HEADER_SIZE_V1 = struct.calcsize(HEADER_FMT_V1)
+# v2 header: magic | version | page_size | n_pages | table_offset | policy | pad.
+HEADER_FMT = "<4sHIIQB3x"
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
+_POLICY_IDS = {"exact": 1, "extreme": 2}
+_POLICY_NAMES = {1: "exact", 2: "extreme"}
 ENTRY_FMT = "<IHI IB B Q".replace(" ", "")
 ENTRY_SIZE = struct.calcsize(ENTRY_FMT)
 PAGE_HDR_FMT = "<BIIf"
@@ -67,11 +78,18 @@ _ON_WINDOWS = _sys.platform.startswith("win32")
 
 
 class LacWriter:
-    """Build a .lac file from 2-D float32 tensors, split into pages."""
+    """Build a .lac file from 2-D float32 tensors, split into pages.
 
-    def __init__(self, path: str, page_size: int = 2 * 1024 * 1024):
+    ``precision_policy`` is recorded in the file header ("exact" or "extreme");
+    it is a label describing how the caller chose per-tensor precision — the
+    writer itself just stores what it is given.
+    """
+
+    def __init__(self, path: str, page_size: int = 2 * 1024 * 1024,
+                 precision_policy: str = "exact"):
         self.path = path
         self.page_size = int(page_size)
+        self.precision_policy = _q.validate_policy(precision_policy)
         self._f = open(path, "wb")
         self._f.write(b"\x00" * HEADER_SIZE)  # placeholder, rewritten on close
         self._entries: list[tuple] = []
@@ -140,7 +158,15 @@ class LacWriter:
             self._f.write(struct.pack("<I", len(b)) + b)
         self._f.seek(0)
         self._f.write(
-            struct.pack(HEADER_FMT, MAGIC, VERSION, self.page_size, len(self._entries), table_offset)
+            struct.pack(
+                HEADER_FMT,
+                MAGIC,
+                VERSION,
+                self.page_size,
+                len(self._entries),
+                table_offset,
+                _POLICY_IDS[self.precision_policy],
+            )
         )
         self._f.close()
 
@@ -162,13 +188,25 @@ class PagedWeightStore:
         self.hot_budget = int(hot_budget_bytes)
         self._fd = os.open(path, os.O_RDONLY)
         with open(path, "rb") as f:
-            magic, ver, self.page_size, n_pages, table_off = struct.unpack(
-                HEADER_FMT, f.read(HEADER_SIZE)
-            )
-        if magic != MAGIC:
-            raise ValueError(f"not a .lac file (bad magic): {path}")
-        if ver != VERSION:
-            raise ValueError(f"unsupported .lac version {ver}")
+            magic, ver = struct.unpack("<4sH", f.read(6))
+            if magic != MAGIC:
+                raise ValueError(f"not a .lac file (bad magic): {path}")
+            if ver == 1:
+                # v1 predates precision policies and always used adaptive
+                # tiering -> read as "extreme".
+                self.page_size, n_pages, table_off = struct.unpack(
+                    "<IIQ", f.read(HEADER_SIZE_V1 - 6)
+                )
+                self.precision_policy = "extreme"
+            elif ver == VERSION:
+                self.page_size, n_pages, table_off, pid = struct.unpack(
+                    "<IIQB3x", f.read(HEADER_SIZE - 6)
+                )
+                if pid not in _POLICY_NAMES:
+                    raise ValueError(f"unknown precision policy id {pid} in {path}")
+                self.precision_policy = _POLICY_NAMES[pid]
+            else:
+                raise ValueError(f"unsupported .lac version {ver}")
         self.n_pages = n_pages
         self._entries: list[dict] = []
         with open(path, "rb") as f:
@@ -263,6 +301,42 @@ class PagedWeightStore:
             self._insert(idx, arr, nbytes)
         self._freq[idx] = 0.9 * self._freq.get(idx, 0.0) + 0.1
         return arr
+
+    def is_resident(self, idx: int) -> bool:
+        """True if page idx is currently in the hot-set (no I/O performed)."""
+        with self._lock:
+            return idx in self._cache
+
+    def are_resident(self, indices) -> bool:
+        """True if every listed page is in the hot-set. One lock acquisition."""
+        with self._lock:
+            cache = self._cache
+            return all(i in cache for i in indices)
+
+    def ensure_resident(self, page_ids) -> int:
+        """Blocking: fault every missing page into the hot-set (LRU eviction
+        per the hard byte budget). Returns the number of pages faulted.
+
+        This is the exactness primitive: call it with the FULL required page
+        set before compute runs, and compute provably never observes a missing
+        page — regardless of what the oracle predicted. A bad prediction costs
+        faults (time), never correctness.
+
+        Works identically on the live path (real NVMe reads) and in tests.
+        Callers must size ``hot_budget_bytes >= page_size``; a page larger
+        than the whole budget cannot be held, in which case it is re-faulted
+        on every call and ``are_resident`` stays False (loud, not silent).
+        """
+        faults = 0
+        seen = set()
+        for i in page_ids:
+            if i in seen:
+                continue
+            seen.add(i)
+            if not self.is_resident(i):
+                self.get_page(i)  # synchronous fault; updates stats
+                faults += 1
+        return faults
 
     def prefetch(self, indices) -> None:
         """Async prefetch: submit reads now, insert into hot-set on completion."""

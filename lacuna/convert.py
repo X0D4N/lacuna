@@ -10,11 +10,19 @@ Precision tiers (initial; the pager re-tiers by measured frequency at runtime):
 - tensors larger than --cold-threshold-mb -> ternary (cold tier)
 - non-F32/F16 GGUF types           -> RAW opaque byte pages (no requantization)
 
-Only F32 (type 0) and F16 (type 1) tensors are requantized; anything else
-(Q4_0, Q8_0, ...) is carried through byte-identical as RAW pages. This is
-honest: Lacuna does not claim to improve pre-quantized GGUF blocks.
+Precision policies (``--precision-policy``):
+- ``exact`` (default): EVERY tensor is carried as RAW byte pages, bit-identical
+  to the source GGUF. Paging and sparsity only — zero requantization, so there
+  is never additional quality loss beyond what the source file already chose.
+- ``extreme``: the adaptive tiering above (plus RAW carry-through for
+  pre-quantized GGUF types). Fastest; documented quality/speed tradeoff.
 
-CLI: ``python -m lacuna.convert model.gguf model.lac [--page-mb 2]``
+Only F32 (type 0) and F16 (type 1) tensors are requantized, and only under the
+extreme policy; anything else (Q4_0, Q8_0, ...) is carried through byte-identical
+as RAW pages. This is honest: Lacuna does not claim to improve pre-quantized
+GGUF blocks.
+
+CLI: ``python -m lacuna.convert model.gguf model.lac [--page-mb 2] [--precision-policy exact|extreme]``
 """
 
 from __future__ import annotations
@@ -101,6 +109,25 @@ def parse_gguf_header(path: str):
     return infos, data_start
 
 
+def _dense_nbytes(info) -> int | None:
+    dt, es = _DENSE_TYPES.get(info["type"], (None, None))
+    if dt is None:
+        return None
+    n_elem = 1
+    for d in info["dims"]:
+        n_elem *= d
+    return n_elem * es
+
+
+def _opaque_nbytes(info, infos, data_start: int, fsize: int) -> int:
+    off = info["offset"]
+    nbytes = fsize - (data_start + off)  # over-estimate; trimmed below
+    later = [i["offset"] for i in infos if i["offset"] > off]
+    if later:
+        nbytes = min(nbytes, min(later) - off)
+    return min(nbytes, 1 << 32)
+
+
 def convert(
     gguf_path: str,
     spp_path: str,
@@ -108,33 +135,46 @@ def convert(
     cold_threshold_mb: int = 1024,
     layer_fn=None,
     quiet: bool = False,
+    precision_policy: str = "exact",
 ) -> dict:
     """Convert GGUF -> .lac. Returns stats dict."""
+    precision_policy = _q.validate_policy(precision_policy)
     infos, data_start = parse_gguf_header(gguf_path)
     fd = os.open(gguf_path, os.O_RDONLY)
+    fsize = os.fstat(fd).st_size
     cold_threshold = cold_threshold_mb * 1024 * 1024
-    stats = {"tensors": 0, "pages": 0, "bytes_in": 0, "tiers": {"q4": 0, "q2": 0, "ternary": 0, "raw": 0}}
+    stats = {"tensors": 0, "pages": 0, "bytes_in": 0, "tiers": {"q4": 0, "q2": 0, "ternary": 0, "raw": 0},
+             "precision_policy": precision_policy}
 
     def log(msg):
         if not quiet:
             print(msg, flush=True)
 
-    with LacWriter(spp_path, page_size=page_mb * 1024 * 1024) as w:
+    with LacWriter(spp_path, page_size=page_mb * 1024 * 1024,
+                   precision_policy=precision_policy) as w:
         for info in infos:
             name, dims, ttype, off = info["name"], info["dims"], info["type"], info["offset"]
             layer = layer_fn(name) if layer_fn else 0
-            if ttype in _DENSE_TYPES:
+            if precision_policy == _q.POLICY_EXACT:
+                # Bit-identical: carry the source bytes untouched, whatever
+                # the GGUF type (F32, F16, Q4_K_M, ...). Zero requantization.
+                nbytes = _dense_nbytes(info)
+                if nbytes is None:
+                    nbytes = _opaque_nbytes(info, infos, data_start, fsize)
+                blob = os.pread(fd, nbytes, data_start + off)
+                w.add_raw_bytes(name, blob, layer=layer)
+                stats["tiers"]["raw"] += 1
+                stats["bytes_in"] += len(blob)
+                tier_label = "raw[exact]"
+            elif ttype in _DENSE_TYPES:
                 dt, es = _DENSE_TYPES[ttype]
-                n_elem = 1
-                for d in dims:
-                    n_elem *= d
-                nbytes = n_elem * es
+                nbytes = _dense_nbytes(info)
                 raw = os.pread(fd, nbytes, data_start + off)
                 arr = np.frombuffer(raw, dtype=dt).astype(np.float32)
                 # GGUF stores dims reversed vs row-major expectation; treat as 2-D
                 # (rows = last dim, cols = product of the rest).
                 rows = int(dims[-1]) if dims else 1
-                cols = int(n_elem // max(rows, 1))
+                cols = int(nbytes // es // max(rows, 1))
                 arr = arr.reshape(rows, cols)
                 prec = _tier_for(name, nbytes, cold_threshold)
                 w.add_tensor(name, arr, layer=layer, precision=prec)
@@ -143,14 +183,7 @@ def convert(
                 tier_label = _q.precision_name(prec)
             else:
                 # Opaque: carry through as RAW byte pages (no requantization).
-                # Size unknown without the type table; bound by next tensor or EOF.
-                fsize = os.fstat(fd).st_size
-                nbytes = fsize - (data_start + off)  # over-estimate; trimmed below
-                # find a tighter bound: distance to the next tensor's offset
-                later = [i["offset"] for i in infos if i["offset"] > off]
-                if later:
-                    nbytes = min(nbytes, min(later) - off)
-                nbytes = min(nbytes, 1 << 32)
+                nbytes = _opaque_nbytes(info, infos, data_start, fsize)
                 blob = os.pread(fd, nbytes, data_start + off)
                 w.add_raw_bytes(name, blob, layer=layer)
                 stats["tiers"]["raw"] += 1
@@ -176,11 +209,19 @@ def main(argv=None) -> int:
     ap.add_argument("output", help="output .lac file")
     ap.add_argument("--page-mb", type=int, default=2)
     ap.add_argument("--cold-threshold-mb", type=int, default=1024)
+    ap.add_argument(
+        "--precision-policy",
+        choices=list(_q.PRECISION_POLICIES),
+        default=_q.POLICY_EXACT,
+        help="exact: bit-identical source bytes (default); extreme: adaptive "
+        "Q4/Q2/ternary tiering (fastest, documented quality tradeoff)",
+    )
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
     stats = convert(
         a.input, a.output, page_mb=a.page_mb,
         cold_threshold_mb=a.cold_threshold_mb, layer_fn=_default_layer,
+        precision_policy=a.precision_policy,
     )
     if not a.quiet:
         print(f"done: {stats['tensors']} tensors, tiers={stats['tiers']}")

@@ -8,10 +8,22 @@ Three codecs, chosen per page by measured activation frequency:
   2-bit codes (4 per byte). Cold neurons contribute little by definition, so the
   coarser grid costs little quality.
 
+Precision policies (see also ``lacuna/convert.py``):
+
+- ``"exact"`` (default): pages keep SOURCE precision bit-for-bit — paging and
+  sparsity only, zero requantization. In the ``.lac`` file every tensor is
+  stored as RAW byte pages, byte-identical to the source GGUF.
+- ``"extreme"``: the adaptive Q4/Q2/ternary tiering above — fastest, with a
+  documented quality/speed tradeoff.
+
+Honest note on quality: the open-source ecosystem's standard for full
+intelligence is Q4_K_M-class quantization. Lacuna's exact mode preserves
+whatever precision the source GGUF had, bit-for-bit — there is never
+*additional* degradation beyond what the source file already chose.
 Post-training 1-2 bit quantization of an existing dense model does degrade
 quality (see docs/PRIOR_ART.md: GPTQ-2bit collapses); Lacuna applies the
-coarse tiers only to pages the oracle measures as rarely activated, and the
-converter keeps attention/norm/embeddings at Q4.
+coarse tiers only under the ``extreme`` policy, which the user opts into
+explicitly.
 """
 
 from __future__ import annotations
@@ -22,6 +34,19 @@ Q4 = 4
 Q2 = 2
 TERNARY = 1  # ~1.58-bit tier
 RAW = 0  # opaque bytes (e.g. pre-quantized GGUF blocks), no codec
+
+POLICY_EXACT = "exact"
+POLICY_EXTREME = "extreme"
+PRECISION_POLICIES = (POLICY_EXACT, POLICY_EXTREME)
+
+
+def validate_policy(policy: str) -> str:
+    """Return the policy if known, else raise. Keeps typos loud, not silent."""
+    if policy not in PRECISION_POLICIES:
+        raise ValueError(
+            f"unknown precision policy {policy!r} (expected one of {PRECISION_POLICIES})"
+        )
+    return policy
 
 _PRECISION_NAMES = {Q4: "q4", Q2: "q2", TERNARY: "ternary", RAW: "raw"}
 

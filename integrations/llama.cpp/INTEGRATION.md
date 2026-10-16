@@ -52,6 +52,24 @@ The pager owns weight bytes on NVMe; ggml owns compute. The seam is the
    hot-set while `llama_decode` runs the current step. Ordering fence: a decode
    batch for step *t+1* is not built until its union-mask pages are resident.
 
+## Exact mode in production (per-layer tiling)
+
+The reference engine ensures the *full* page set per decode step, which needs
+`hot_budget_bytes` ≥ model size. On real small hardware the required set is
+one **layer** (or one expert for MoE): the production loop is
+
+```
+for layer in model.layers:                     # or expert shard
+    ensure_resident(pages_of(layer))            # blocking; counted
+    llama_decode(layer_batch)                   # compute never sees a miss
+    prefetch(union_mask_pages_of(layer + 1))    # overlapped with compute
+```
+
+`OverlapScheduler(required_pages_for_step=...)` is exactly this hook: pass a
+callable returning one layer's page ids and `exact_guarantee_held` is measured
+per tile. The oracle's union mask remains the prefetch schedule only — it
+never removes a weight from the math, so output stays bit-identical to dense.
+
 ## What stays in Python vs what must move to C++
 
 | Stays in Python | Must move to C++ (or C via ctypes callbacks) |

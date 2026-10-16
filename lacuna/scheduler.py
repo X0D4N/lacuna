@@ -75,7 +75,23 @@ class OverlapScheduler:
     - ``fetch_fn(page_ids)``: ensure pages are resident (prefetch).
     - ``compute_fn(token_ctx)``: run one decode step; returns anything.
     - ``pages_for_step(step)``: oracle union-mask page ids needed for a step.
+      In exact mode this is the PREFETCH SCHEDULE ONLY — it never gates what
+      compute may read (see ``exact`` below).
     - ``on_miss(page_id)``: called when a needed page was not resident.
+
+    Exact mode (``exact=True``)
+    ---------------------------
+    The exactness guarantee: prediction guides memory, never math. After the
+    union-mask prefetch for a step resolves, the scheduler calls
+    ``ensure_fn(full_required_page_set)`` — a blocking fault of every page the
+    step's compute may touch — BEFORE ``compute_fn`` runs. Compute therefore
+    never observes a missing page, no matter how bad the oracle's prediction
+    was. Forced faults are counted as ``exact_faults``; ``exact_guarantee_held``
+    is True only if every step verified full residency (via ``is_resident``).
+
+    This is the structural difference from PowerInfer-style pruning: there the
+    predictor decides which neurons participate in the math (quality cost);
+    here the predictor only decides the *order* pages stream in (time cost).
     """
 
     def __init__(self, lookahead_k: int = 4, workers: int = 2):
@@ -87,6 +103,8 @@ class OverlapScheduler:
             "prefetch_calls": 0,
             "total_compute_s": 0.0,
             "total_fetch_s": 0.0,
+            "exact_faults": 0,
+            "exact_guarantee_held": True,
         }
         self._lock = threading.Lock()
 
@@ -97,8 +115,29 @@ class OverlapScheduler:
         fetch_fn,
         compute_fn,
         is_resident=None,
+        exact: bool = False,
+        ensure_fn=None,
+        required_pages_for_step=None,
     ) -> list:
-        """Run n_steps with prefetch of the next K steps overlapped with compute."""
+        """Run n_steps with prefetch of the next K steps overlapped with compute.
+
+        ``exact=True`` requires ``ensure_fn`` (e.g.
+        ``store.ensure_resident``): a blocking callable taking an iterable of
+        page ids, faulting each missing page, returning the fault count.
+        ``required_pages_for_step`` gives the FULL required set per step
+        (defaults to ``pages_for_step``); the oracle's ``pages_for_step`` is
+        then only the prefetch schedule.
+        """
+        if exact and ensure_fn is None:
+            raise ValueError(
+                "exact=True requires ensure_fn (e.g. store.ensure_resident)"
+            )
+        req_fn = required_pages_for_step or pages_for_step
+        with self._lock:
+            self.stats["exact_faults"] = 0
+            self.stats["exact_guarantee_held"] = True
+        held = True
+
         results = []
         pending: dict[int, object] = {}
 
@@ -124,19 +163,32 @@ class OverlapScheduler:
             if edge < n_steps:
                 pending[edge] = self._pool.submit(_fetch, edge)
 
-            # oracle-miss check before compute
-            if is_resident is not None:
-                for pid in pages_for_step(step):
-                    if not is_resident(pid):
-                        with self._lock:
-                            self.stats["misses"] += 1
-                        fetch_fn([pid])  # on-demand fault (counted)
+            required = list(req_fn(step))
+            if exact:
+                # Guarantee point: full required set resident BEFORE compute.
+                faults = ensure_fn(required)
+                with self._lock:
+                    self.stats["exact_faults"] += faults
+                if is_resident is not None and not all(
+                    is_resident(p) for p in required
+                ):
+                    held = False
+            else:
+                # oracle-miss check before compute
+                if is_resident is not None:
+                    for pid in pages_for_step(step):
+                        if not is_resident(pid):
+                            with self._lock:
+                                self.stats["misses"] += 1
+                            fetch_fn([pid])  # on-demand fault (counted)
 
             t0 = time.perf_counter()
             results.append(compute_fn(step))
             with self._lock:
                 self.stats["total_compute_s"] += time.perf_counter() - t0
                 self.stats["steps"] += 1
+        with self._lock:
+            self.stats["exact_guarantee_held"] = held
         return results
 
     def tok_per_s(self) -> float:

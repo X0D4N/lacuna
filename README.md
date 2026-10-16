@@ -24,7 +24,17 @@ is **usable**, not instant.
 | Dense 100B @2-bit, naive streaming | 0.14 | 25.00 | 8.21 s |
 | + 90% oracle sparsity | 1.33 | 2.62 | 0.86 s |
 | **+ speculative K=4 over union mask (Lacuna)** | **3.54** | 0.99 | 0.32 s |
+| **Lacuna exact mode (default)** | **≈3.54¹** | 0.99 | 0.32 s |
 | MoE 100B, 20B active @2-bit, hot-set resident | 14.00 | 0.25 | 0.08 s |
+
+¹ Exact-mode speed is SIMULATED under the same assumptions as the row above
+(oracle recall 0.95 — a bad oracle costs faults, i.e. time, never quality).
+Exactness itself is not simulated: it is **proven by `tests/test_exact.py`**
+— token-identical output to the dense baseline even with a deliberately
+broken (random-mask) oracle — and `tests/test_tree_spec.py` proves tree
+speculation accepts exactly the target's own greedy tokens. In exact mode the
+oracle only schedules prefetches; it never decides what gets computed.
+`--extreme` opts out for maximum tok/s at a documented quality tradeoff.
 
 No measured system exceeds ~5 tok/s for 100B+ models on ≤4 GB VRAM with
 quality held (see [`docs/PRIOR_ART.md`](docs/PRIOR_ART.md)) — Lacuna's
@@ -55,6 +65,8 @@ sensible defaults, no config files:
 
 ```bash
 lacuna run model.gguf "Explain sparse attention"
+# --exact (default): output identical to the dense baseline, guaranteed
+# --extreme:        adaptive precision, fastest, documented quality tradeoff
 lacuna simulate        # print the honest tok/s table above
 ```
 

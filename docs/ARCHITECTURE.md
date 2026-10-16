@@ -69,14 +69,61 @@ metric, oracle retrains on misses).
 A tiny draft model (0.5–1B, fully resident) proposes K tokens; the main model verifies
 all K in **one sparse pass** over the union mask. Weight-streaming cost is paid once
 per K tokens instead of once per token — this is the arithmetic that turns 1.4 tok/s
-into 4–6 tok/s.
+into 4–6 tok/s. The tree variant (`speculative_tree_generate`, SpecInfer/EAGLE-3
+style) proposes a tree of candidate paths per round and accepts the longest prefix
+the target greedily agrees with — exact by construction: accepted tokens equal
+plain target-only greedy decoding.
 
 ### M6 — Adaptive per-page precision (cold pages go lower)
 Hot pages stored at 4-bit, warm at 2-bit, cold at ~1.58-bit (BitNet-style ternary).
 Precision follows measured activation frequency, recalibrated periodically. Quality
 cost is bounded because cold neurons contribute little by definition.
 
-## 3. Why it is universal ("small tech, billions of people")
+## 3. Exactness guarantee ("prediction guides memory, never math")
+
+Lacuna's default mode is **exact**: bit-for-bit identical output to running the
+same model densely, by construction — not by hoping the oracle is accurate.
+
+Three rules enforce it:
+
+1. **The oracle never skips computation.** Unlike PowerInfer-style pruning
+   (where the predictor decides which neurons participate in the math, at a
+   quality cost when wrong), Lacuna's oracle is a *prefetch scheduler only*.
+   Its union mask decides the *order* pages stream from NVMe, never *whether*
+   a weight participates in a matmul. A wrong prediction costs time (an
+   on-demand fault), never quality.
+2. **Full residency before compute.** In exact mode the scheduler calls
+   `PagedWeightStore.ensure_resident(full_required_page_set)` before every
+   compute step, after the union-mask prefetch resolves. Compute therefore
+   never observes a missing page. Forced faults are counted as `exact_faults`;
+   the flag `exact_guarantee_held` is *measured* per step via `are_resident`
+   and is True only if every step verified full residency.
+3. **No requantization.** The `exact` precision policy (default) stores every
+   tensor's source bytes bit-identical in the `.lac` file — paging and
+   sparsity only, zero requantization. The ecosystem standard for full
+   intelligence is Q4_K_M-class quantization; Lacuna's exact mode preserves
+   whatever precision the source GGUF had, bit-for-bit, so there is never
+   *additional* degradation.
+
+Consequence, stated plainly: in exact mode, oracle quality affects **speed
+only**. This is proven, not simulated: `tests/test_exact.py` shows
+token-identical output to the dense baseline even with a deliberately broken
+(random-mask) oracle — the only difference is `exact_faults > 0`. And
+`tests/test_tree_spec.py` proves tree speculation accepts exactly the
+target's own greedy tokens.
+
+Honest scaling boundary: the reference engine ensures the full page set per
+decode step, so the guarantee needs `hot_budget_bytes` ≥ the model's paged
+size; when the budget is smaller the flag measurably reads False instead of
+pretending (there is a test for this too). Production deployments tile per
+layer (per expert for MoE) — the scheduler's `required_pages_for_step` hook
+exists for exactly that.
+
+`--extreme` opts out of all three rules: adaptive Q4/Q2/ternary tiering with
+no residency guarantee — fastest, documented quality/speed tradeoff, chosen
+explicitly.
+
+## 4. Why it is universal ("small tech, billions of people")
 
 - **Model-agnostic:** any GGUF model converts via `lacuna convert` (offline, one
   pass). Dense, MoE, present and future architectures — the oracle trains per model,
@@ -91,7 +138,7 @@ cost is bounded because cold neurons contribute little by definition.
 - **Small:** the engine is a few thousand lines — pager, oracle, scheduler,
   draft-verifier, converter, simulator. No cluster, no daemon fleet, no cloud.
 
-## 4. What "no bottlenecking the system" means concretely
+## 5. What "no bottlenecking the system" means concretely
 
 - RAM cap enforced: hot-set has a hard byte budget (default: 6 GB of 8 GB); the OS
   and other apps keep the rest. Pager uses `mlock`-free eviction, never swap.
@@ -103,7 +150,7 @@ cost is bounded because cold neurons contribute little by definition.
   recall`, `bytes/token`, `p99 inter-token latency` — the numbers that prove the
   system isn't choking.
 
-## 5. Honest limits (stated upfront, verified by `simulator/`)
+## 6. Honest limits (stated upfront, verified by `simulator/`)
 
 - Dense 100B will never feel like a 3B model on this hardware. Physics forbids it.
   Target: **usable** (multi tok/s), not instant.
@@ -115,14 +162,14 @@ cost is bounded because cold neurons contribute little by definition.
   discrete-event simulator calibrated to RTX 2050 / NVMe specs plus small-model
   end-to-end correctness tests of the paging machinery.
 
-## 6. Repository layout
+## 7. Repository layout
 
 ```
 lacuna/          # the engine (Python package)
   oracle.py          # M1 activation oracle (train + infer)
   pager.py           # M2/M3 paged weight store + hot-set
   scheduler.py       # M4 I/O-compute overlap scheduler
-  speculate.py       # M5 draft-verify loop
+  speculate.py       # M5 draft-verify loop (linear + tree)
   quant.py           # M6 adaptive per-page precision
   convert.py         # GGUF -> .lac paged format
   engine.py          # orchestration on top of llama.cpp (+ one-line Engine API)

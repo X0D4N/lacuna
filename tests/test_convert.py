@@ -46,15 +46,39 @@ def test_convert_roundtrip(tmp_path):
     infos, data_start = parse_gguf_header(gguf)
     assert [i["name"] for i in infos] == ["blk.0.attn.wq", "blk.0.ffn.w1"]
 
-    stats = convert(gguf, spp, page_mb=1, quiet=True)
+    stats = convert(gguf, spp, page_mb=1, quiet=True, precision_policy="extreme")
     assert stats["tensors"] == 2
+    assert stats["precision_policy"] == "extreme"
     assert stats["tiers"]["q4"] == 1  # attn -> hot tier
     assert stats["tiers"]["q2"] == 1  # ffn  -> warm tier
 
     with open(spp, "rb") as f:
         assert f.read(4) == MAGIC
     with PagedWeightStore(spp, hot_budget_bytes=10**9) as s:
+        assert s.precision_policy == "extreme"
         assert s.names == ["blk.0.attn.wq", "blk.0.ffn.w1"]
         assert s.n_pages >= 2
         p0 = s.get_page(0)
         assert p0.shape[1] == 4 and np.all(np.isfinite(p0))
+
+
+def test_convert_exact_default_is_bit_identical(tmp_path):
+    """Default policy: every tensor carried as RAW bytes, bit-identical."""
+    gguf = str(tmp_path / "tiny.gguf")
+    spp = str(tmp_path / "tiny.lac")
+    _write_fake_gguf(gguf)
+    infos, _ = parse_gguf_header(gguf)
+
+    stats = convert(gguf, spp, page_mb=1, quiet=True)  # default policy
+    assert stats["precision_policy"] == "exact"
+    assert stats["tiers"]["raw"] == 2
+
+    with PagedWeightStore(spp, hot_budget_bytes=10**9) as s:
+        assert s.precision_policy == "exact"
+        # tensor 0's pages concatenated == the exact source bytes
+        pages = [i for i, e in enumerate(s._entries) if e["tensor_id"] == 0]
+        blob = b"".join(s.get_page(i).tobytes() for i in pages)
+    # rebuild the source bytes for tensor 0 from the fake GGUF
+    rng = np.random.default_rng(3)
+    src = rng.standard_normal((8, 4)).astype(np.float32)
+    assert blob == src.tobytes()

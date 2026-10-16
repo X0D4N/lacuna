@@ -22,8 +22,8 @@ def _cmd_run(a) -> int:
 
     hw = detect_hardware()
     print(f"lacuna v{__import__('lacuna').__version__} | {hw.summary()}", flush=True)
-    eng = Engine(a.model, hardware=hw)
-    print(f"mode: {eng.mode}", flush=True)
+    eng = Engine(a.model, hardware=hw, exact=a.exact)
+    print(f"mode: {eng.mode} | exact: {eng.exact} | precision: {eng.precision_policy}", flush=True)
     prompt = a.prompt or sys.stdin.read().strip() or "Hello"
     print(eng.generate(prompt, max_tokens=a.max_tokens), flush=True)
     eng.close()
@@ -43,7 +43,10 @@ def _cmd_serve(a) -> int:
 def _cmd_convert(a) -> int:
     from .convert import main as convert_main
 
-    return convert_main([a.input, a.output, "--page-mb", str(a.page_mb)])
+    return convert_main(
+        [a.input, a.output, "--page-mb", str(a.page_mb),
+         "--precision-policy", a.precision_policy]
+    )
 
 
 def _cmd_mcp(a) -> int:
@@ -66,6 +69,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("model", help=".gguf or .lac file (or 'mock')")
     p.add_argument("prompt", nargs="?", default=None)
     p.add_argument("--max-tokens", type=int, default=64)
+    p.add_argument(
+        "--exact", dest="exact", action="store_true", default=True,
+        help="exact mode: output identical to the dense baseline by "
+        "construction; oracle only schedules prefetches (default)",
+    )
+    p.add_argument(
+        "--extreme", dest="exact", action="store_false",
+        help="extreme mode: adaptive Q4/Q2/ternary precision, fastest, "
+        "documented quality/speed tradeoff",
+    )
     p.set_defaults(fn=_cmd_run)
 
     p = sub.add_parser("serve", help="OpenAI-compatible HTTP server")
@@ -78,6 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("input")
     p.add_argument("output")
     p.add_argument("--page-mb", type=int, default=2)
+    p.add_argument(
+        "--precision-policy", choices=["exact", "extreme"], default="exact",
+        help="exact: bit-identical source bytes (default); extreme: adaptive "
+        "Q4/Q2/ternary tiering",
+    )
     p.set_defaults(fn=_cmd_convert)
 
     p = sub.add_parser("mcp", help="MCP server over stdio")

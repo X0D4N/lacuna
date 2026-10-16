@@ -31,6 +31,38 @@ Per-token time = `compute + max(0, fetch - compute)` (fetch hides behind the
 previous token's compute; the uncovered remainder is paid). Compute =
 `2 * active_params / 8 TFLOPS`.
 
+## Exact-mode methodology
+
+Exactness is **proven, not simulated**. The discrete-event simulator above does
+not model exactness at all — it models speed. The exactness argument is
+structural, and it is verified by tests:
+
+1. **Guarantee mechanism** (`lacuna/scheduler.py`, `lacuna/engine.py`): in
+   exact mode, after the oracle's union-mask prefetch resolves, the scheduler
+   calls `PagedWeightStore.ensure_resident(full_required_page_set)` — a
+   blocking fault of every page the step's compute may touch — *before* the
+   compute callable runs. The oracle's output only orders the prefetch; it
+   never gates what compute reads. `exact_guarantee_held` is measured per
+   step via `are_resident`, not assumed.
+2. **Token identity** (`tests/test_exact.py`): exact-mode output is
+   token-identical to a dense baseline (all pages pinned resident) across
+   several prompts — including with a deliberately broken random-mask oracle,
+   where the only difference is `exact_faults > 0` (slower, never different).
+   A small-budget run measurably reports `exact_guarantee_held = False`,
+   proving the flag is a measurement, and its output is still identical.
+3. **No requantization** (`tests/test_precision_policy.py`, `tests/test_convert.py`):
+   the `exact` precision policy stores source bytes bit-identical; the policy
+   id is recorded in the `.lac` header (v2) and exposed by the reader.
+4. **Tree speculation** (`tests/test_tree_spec.py`): accepted tokens equal
+   plain target-only greedy decoding for the same seed, by construction
+   (acceptance is defined as the target's own greedy choice at each position).
+
+What "exact" does NOT claim: it does not make a quantized source model
+smarter — it preserves *whatever the source GGUF was*, bit-for-bit, with no
+additional degradation. The ecosystem standard for full intelligence is
+Q4_K_M-class quantization; Lacuna exact mode keeps you at exactly your
+source's level, never below.
+
 ## What the simulator does NOT model
 
 - Prefill (long-prompt) performance — decode only.
