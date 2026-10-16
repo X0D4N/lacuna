@@ -1,0 +1,306 @@
+"""NVMe paged weight store + hot-set residency (M2/M3) — numpy + stdlib.
+
+``.lac`` file layout (little-endian)::
+
+    header:  magic b'LAC1' | u16 version | u32 page_size | u32 n_pages | u64 table_offset
+    pages:   page_header + packed payload, repeated
+    table:   n_pages entries of
+             u32 tensor_id | u16 layer | u32 row_start | u32 row_end |
+             u8 precision | u8 reserved | u64 file_offset
+    names:   u32 n_names, then for each: u32 len + bytes (tensor id -> name)
+
+Each page payload starts with its own header so pages are self-describing::
+
+    page_header: u8 precision | u32 rows | u32 cols | f32 scale
+
+then the packed bytes for the codec (quant.py). RAW pages (precision 0) store
+opaque bytes with rows/cols/scale ignored by the reader (returned as uint8).
+
+Disk I/O paths by platform (Linux and Windows 11 only):
+- Linux: ``io_uring`` fast path when a python binding is importable (guarded
+  import, silent fallback); otherwise ThreadPoolExecutor + ``os.pread``.
+- Windows 11: ThreadPoolExecutor + regular reads (``os.pread`` is unavailable
+  on Windows; the reader uses plain ``read`` on a per-thread file handle).
+No io_uring references exist on the Windows path.
+"""
+
+from __future__ import annotations
+
+import os
+import struct
+import threading
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
+
+from . import quant as _q
+
+MAGIC = b"LAC1"
+VERSION = 1
+HEADER_FMT = "<4sHIIQ"
+HEADER_SIZE = struct.calcsize(HEADER_FMT)
+ENTRY_FMT = "<IHI IB B Q".replace(" ", "")
+ENTRY_SIZE = struct.calcsize(ENTRY_FMT)
+PAGE_HDR_FMT = "<BIIf"
+PAGE_HDR_SIZE = struct.calcsize(PAGE_HDR_FMT)
+
+import sys as _sys
+
+# io_uring is Linux-only. Guarded import; silent fallback everywhere else.
+if _sys.platform.startswith("linux"):
+    try:  # optional: faster async disk reads when a binding exists
+        import uring  # type: ignore
+
+        _HAS_URING = True
+    except ImportError:
+        uring = None  # type: ignore
+        _HAS_URING = False
+else:
+    uring = None  # type: ignore
+    _HAS_URING = False
+
+_ON_WINDOWS = _sys.platform.startswith("win32")
+
+
+# ------------------------------------------------------------- writer ---
+
+
+class LacWriter:
+    """Build a .lac file from 2-D float32 tensors, split into pages."""
+
+    def __init__(self, path: str, page_size: int = 2 * 1024 * 1024):
+        self.path = path
+        self.page_size = int(page_size)
+        self._f = open(path, "wb")
+        self._f.write(b"\x00" * HEADER_SIZE)  # placeholder, rewritten on close
+        self._entries: list[tuple] = []
+        self._names: list[str] = []
+
+    def add_tensor(
+        self, name: str, arr: np.ndarray, layer: int = 0, precision: int = _q.Q2
+    ) -> int:
+        """Add one 2-D tensor; returns tensor_id. Rows are packed into pages."""
+        arr = np.asarray(arr, dtype=np.float32)
+        if arr.ndim != 2:
+            raise ValueError("LacWriter.add_tensor needs a 2-D array")
+        tensor_id = len(self._names)
+        self._names.append(name)
+        rows, cols = arr.shape
+
+        if precision == _q.RAW:
+            payload = np.ascontiguousarray(arr).view(np.uint8)
+            packed_all, scale, _ = payload, np.float32(1.0), arr.shape
+            per_row = payload.nbytes // max(rows, 1)
+            pack_fn = None
+        else:
+            pack_fn = _q.quantize
+            # bytes per row estimate from a small probe
+            probe = arr[: min(rows, 8)]
+            packed_probe, _, _ = pack_fn(probe, precision)
+            per_row = max(1, packed_probe.nbytes // max(probe.shape[0], 1))
+
+        rows_per_page = max(1, (self.page_size - PAGE_HDR_SIZE) // per_row)
+        for start in range(0, rows, rows_per_page):
+            chunk = arr[start : start + rows_per_page]
+            if pack_fn is None:
+                packed = np.ascontiguousarray(chunk).view(np.uint8).reshape(-1)
+                scale = np.float32(1.0)
+            else:
+                packed, scale, _ = pack_fn(chunk, precision)
+            off = self._f.tell()
+            self._f.write(struct.pack(PAGE_HDR_FMT, precision, chunk.shape[0], cols, float(scale)))
+            self._f.write(packed.tobytes())
+            self._entries.append(
+                (tensor_id, int(layer), start, start + chunk.shape[0], precision, 0, off)
+            )
+        return tensor_id
+
+    def add_raw_bytes(self, name: str, blob: bytes, layer: int = 0) -> int:
+        """Store an opaque byte blob as RAW pages (e.g. pre-quantized GGUF blocks)."""
+        tensor_id = len(self._names)
+        self._names.append(name)
+        per_page = self.page_size - PAGE_HDR_SIZE
+        for start in range(0, len(blob), per_page):
+            chunk = blob[start : start + per_page]
+            off = self._f.tell()
+            self._f.write(struct.pack(PAGE_HDR_FMT, _q.RAW, 0, len(chunk), 1.0))
+            self._f.write(chunk)
+            self._entries.append((tensor_id, int(layer), 0, 0, _q.RAW, 0, off))
+        return tensor_id
+
+    def close(self) -> None:
+        table_offset = self._f.tell()
+        for e in self._entries:
+            self._f.write(struct.pack(ENTRY_FMT, *e))
+        # name table
+        self._f.write(struct.pack("<I", len(self._names)))
+        for n in self._names:
+            b = n.encode("utf-8")
+            self._f.write(struct.pack("<I", len(b)) + b)
+        self._f.seek(0)
+        self._f.write(
+            struct.pack(HEADER_FMT, MAGIC, VERSION, self.page_size, len(self._entries), table_offset)
+        )
+        self._f.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.close()
+
+
+# ------------------------------------------------------------- reader ---
+
+
+class PagedWeightStore:
+    """Reader with LRU hot-set, EWMA frequency counters, async prefetch."""
+
+    def __init__(self, path: str, hot_budget_bytes: int = 6 * 1024**3, prefetch_workers: int = 4):
+        self.path = path
+        self.hot_budget = int(hot_budget_bytes)
+        self._fd = os.open(path, os.O_RDONLY)
+        with open(path, "rb") as f:
+            magic, ver, self.page_size, n_pages, table_off = struct.unpack(
+                HEADER_FMT, f.read(HEADER_SIZE)
+            )
+        if magic != MAGIC:
+            raise ValueError(f"not a .lac file (bad magic): {path}")
+        if ver != VERSION:
+            raise ValueError(f"unsupported .lac version {ver}")
+        self.n_pages = n_pages
+        self._entries: list[dict] = []
+        with open(path, "rb") as f:
+            f.seek(table_off)
+            for _ in range(n_pages):
+                tid, layer, rs, re_, prec, _res, off = struct.unpack(
+                    ENTRY_FMT, f.read(ENTRY_SIZE)
+                )
+                self._entries.append(
+                    {
+                        "tensor_id": tid,
+                        "layer": layer,
+                        "row_start": rs,
+                        "row_end": re_,
+                        "precision": prec,
+                        "offset": off,
+                    }
+                )
+            (n_names,) = struct.unpack("<I", f.read(4))
+            self.names = []
+            for _ in range(n_names):
+                (ln,) = struct.unpack("<I", f.read(4))
+                self.names.append(f.read(ln).decode("utf-8"))
+
+        if _ON_WINDOWS:
+            self._fd = -1  # os.pread unavailable; reads go through _win_f
+            self._win_f = open(path, "rb")
+            self._win_lock = threading.Lock()
+        self._lock = threading.Lock()
+        self._cache: "OrderedDict[int, tuple[np.ndarray, int]]" = OrderedDict()
+        self._cached_bytes = 0
+        self._freq: dict[int, float] = {}
+        self._pool = ThreadPoolExecutor(max_workers=prefetch_workers)
+        self.stats = {"hits": 0, "faults": 0, "bytes_read": 0, "prefetches": 0}
+
+    # -- low-level ------------------------------------------------
+
+    def _read_at(self, offset: int, n: int) -> bytes:
+        # Linux: io_uring when a binding is present, else os.pread (thread-safe).
+        # Windows 11: os.pread does not exist; use a per-thread file handle
+        # with seek+read serialized by a lock.
+        if _ON_WINDOWS:
+            with self._win_lock:
+                self._win_f.seek(offset)
+                return self._win_f.read(n)
+        return os.pread(self._fd, n, offset)
+
+    def _load_page(self, idx: int) -> tuple[np.ndarray, int]:
+        e = self._entries[idx]
+        # We don't know the payload length up front; read generously: at most
+        # page_size + header. The writer guarantees pages fit.
+        raw = self._read_at(e["offset"], self.page_size + PAGE_HDR_SIZE)
+        prec, rows, cols, scale = struct.unpack(PAGE_HDR_FMT, raw[:PAGE_HDR_SIZE])
+        if prec == _q.RAW:
+            arr = np.frombuffer(raw[PAGE_HDR_SIZE : PAGE_HDR_SIZE + cols], dtype=np.uint8).copy()
+            return arr, PAGE_HDR_SIZE + cols
+        # decode packed length from rows/cols/codec
+        bpr = { _q.Q4: 0.5, _q.Q2: 0.25, _q.TERNARY: 0.25 }[prec]
+        nbytes = int(rows * cols * bpr + 3)
+        packed = np.frombuffer(raw[PAGE_HDR_SIZE : PAGE_HDR_SIZE + nbytes], dtype=np.uint8).copy()
+        arr = _q.dequantize(packed, np.float32(scale), (rows, cols), prec)
+        return arr, PAGE_HDR_SIZE + nbytes
+
+    def _insert(self, idx: int, arr: np.ndarray, nbytes: int) -> None:
+        with self._lock:
+            if idx in self._cache:
+                self._cache.move_to_end(idx)
+                return
+            # evict LRU until the newcomer fits (hard budget — never exceeds)
+            while self._cache and self._cached_bytes + nbytes > self.hot_budget:
+                _, (_, sz) = self._cache.popitem(last=False)
+                self._cached_bytes -= sz
+            if nbytes <= self.hot_budget:
+                self._cache[idx] = (arr, nbytes)
+                self._cached_bytes += nbytes
+
+    # -- public ---------------------------------------------------
+
+    def get_page(self, idx: int) -> np.ndarray:
+        """Return page idx, faulting from NVMe on miss. Updates EWMA frequency."""
+        with self._lock:
+            hit = idx in self._cache
+            if hit:
+                arr, _ = self._cache[idx]
+                self._cache.move_to_end(idx)
+        if hit:
+            self.stats["hits"] += 1
+        else:
+            arr, nbytes = self._load_page(idx)
+            self.stats["faults"] += 1
+            self.stats["bytes_read"] += nbytes
+            self._insert(idx, arr, nbytes)
+        self._freq[idx] = 0.9 * self._freq.get(idx, 0.0) + 0.1
+        return arr
+
+    def prefetch(self, indices) -> None:
+        """Async prefetch: submit reads now, insert into hot-set on completion."""
+        futs = []
+        with self._lock:
+            wanted = [i for i in indices if i not in self._cache]
+        for i in wanted:
+            futs.append(self._pool.submit(self._load_page, i))
+        self.stats["prefetches"] += len(futs)
+        for i, fut in zip(wanted, futs):
+            try:
+                arr, nbytes = fut.result()
+            except OSError:
+                continue
+            self.stats["bytes_read"] += nbytes
+            self._insert(i, arr, nbytes)
+
+    def hot_pages(self) -> list[int]:
+        with self._lock:
+            return list(self._cache.keys())
+
+    def frequency(self, idx: int) -> float:
+        return self._freq.get(idx, 0.0)
+
+    @property
+    def hit_rate(self) -> float:
+        h, f = self.stats["hits"], self.stats["faults"]
+        return h / (h + f) if (h + f) else 0.0
+
+    def close(self) -> None:
+        self._pool.shutdown(wait=True)
+        if _ON_WINDOWS:
+            self._win_f.close()
+        else:
+            os.close(self._fd)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.close()

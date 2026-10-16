@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+# Model artifacts (never commit weights)
+*.gguf
+*.lac
+*.safetensors
+*.bin
+*.npz
+# OS
+.DS_Store
+Thumbs.db
+# Editors
+.vscode/
+.idea/
+*.swp
