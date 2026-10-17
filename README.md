@@ -154,7 +154,7 @@ documented gap in [`docs/PRIOR_ART.md`](docs/PRIOR_ART.md).
 
 - [ ] Real-hardware validation on a 4 GB VRAM box ([checklist](benchmarks/RESULTS.md))
 - [ ] ggml backend buffer hook (see [`integrations/llama.cpp/INTEGRATION.md`](integrations/llama.cpp/INTEGRATION.md))
-- [ ] Oracle training recipes per model family (Qwen, Llama, MoE)
+- [x] Oracle training recipes per model family (Qwen, Llama, MoE) — [`docs/ORACLE_RECIPES.md`](docs/ORACLE_RECIPES.md), `lacuna oracle-recipe`
 - [ ] Perplexity evals: quality cost of the Q2/ternary cold tiers
 - [ ] Windows NVMe: measured prefetch throughput tuning
 

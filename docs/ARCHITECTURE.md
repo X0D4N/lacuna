@@ -167,6 +167,7 @@ explicitly.
 ```
 lacuna/          # the engine (Python package)
   oracle.py          # M1 activation oracle (train + infer)
+  recipes.py         # per-family oracle training recipes (Qwen/Llama/MoE) + calibration
   pager.py           # M2/M3 paged weight store + hot-set
   scheduler.py       # M4 I/O-compute overlap scheduler
   speculate.py       # M5 draft-verify loop (linear + tree)

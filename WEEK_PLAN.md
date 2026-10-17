@@ -6,6 +6,11 @@ empty public repo in the GitHub web UI (connector got 403 on creation) and provi
 a PAT or installs the Muse GitHub app. Do NOT push before that.
 
 Daily cron (`lacuna-week-hardening`) implements the next unchecked track below.
+Serena (oraios/serena, MCP coding toolkit) is installed (`~/.local/bin/serena`)
+and MANDATORY for all code work: project `lacuna` registered + indexed at
+`.serena/project.yml`, health-checked 2026-10-16. Use its semantic tools
+(find_symbol, find_referencing_symbols, replace_symbol_body) instead of blind
+text edits; re-index after large refactors.
 Rules for every run:
 - Read this file, pick the first unchecked track, implement it fully.
 - Test: `PYTHONPATH=~/workspace/lacuna <venv-python> -m pytest ~/workspace/lacuna/tests/ -q`
@@ -21,12 +26,15 @@ Rules for every run:
 
 ## Tracks
 
-- [ ] Day 1 — Sat Oct 17: EXACTNESS MERGE. A subagent built the Exactness upgrade
-      (exact mode, tree speculation, precision policies). Review the diff for
-      correctness and honesty, run the full suite, fix issues, commit as v0.2.0.
-- [ ] Day 2 — Sun Oct 18: ORACLE RECIPES. Calibration/training scripts per model
-      family (Qwen, Llama, MoE) + docs: how to capture activations, train the
-      per-layer predictors, evaluate recall. Synthetic-data recipe included.
+- [x] Day 1 — Sat Oct 17: EXACTNESS MERGE. DONE 2026-10-16 (a day early): v0.2.0
+      committed (3c056f5 "Lacuna v0.2.0: exact mode + tree speculation"), full
+      suite 39/39 green re-verified 2026-10-16T04:50Z. No issues found.
+- [x] Day 2 — Sun Oct 18: ORACLE RECIPES. DONE 2026-10-17 (a day early):
+      `lacuna/recipes.py` (family presets qwen/llama/moe, synthetic calibration,
+      train/evaluate/gate, .npz schema) + `docs/ORACLE_RECIPES.md` (capture
+      procedure, storage arithmetic, hyperparams, gate bars) + `lacuna
+      oracle-recipe` CLI + 13 new tests. Full suite 52/52 green. Real-model
+      capture hook specified but not built (lands with Day 4 GGML track).
 - [ ] Day 3 — Mon Oct 19: PERPLEXITY HARNESS. Honest quality measurement:
       exact vs extreme precision policy on a small model; methodology + results
       table in benchmarks/ (SIMULATED or MEASURED, labeled).
