@@ -63,6 +63,15 @@ def _cmd_bench(a) -> int:
 
     return sim_main([])
 
+def _cmd_perplexity(a) -> int:
+    import sys as _sys
+
+    _sys.path.insert(0, ".")
+    from benchmarks.perplexity.measure import main as ppl_main
+
+    return ppl_main(["--retrain"] if a.retrain else [])
+
+
 def _cmd_oracle_recipe(a) -> int:
     from .recipes import (
         FAMILIES,
@@ -196,6 +205,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--save-data", default=None, metavar="CALIB.NPZ",
                    help="save the calibration dataset (.npz)")
     p.set_defaults(fn=_cmd_oracle_recipe)
+
+    p = sub.add_parser(
+        "perplexity",
+        help="measured exact-vs-extreme quality cost on a tiny trained LM "
+             "(see benchmarks/perplexity.md)",
+    )
+    p.add_argument("--retrain", action="store_true",
+                   help="retrain the tiny LM even if a trained checkpoint exists")
+    p.set_defaults(fn=_cmd_perplexity)
     return ap
 
 

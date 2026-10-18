@@ -35,9 +35,14 @@ Rules for every run:
       procedure, storage arithmetic, hyperparams, gate bars) + `lacuna
       oracle-recipe` CLI + 13 new tests. Full suite 52/52 green. Real-model
       capture hook specified but not built (lands with Day 4 GGML track).
-- [ ] Day 3 — Mon Oct 19: PERPLEXITY HARNESS. Honest quality measurement:
-      exact vs extreme precision policy on a small model; methodology + results
-      table in benchmarks/ (SIMULATED or MEASURED, labeled).
+- [x] Day 3 — Mon Oct 19: PERPLEXITY HARNESS. DONE 2026-10-18 (a day early):
+      `benchmarks/perplexity/` (numpy tiny transformer, 258,528 params, trained
+      on 60K deterministic synthetic tokens) + `lacuna perplexity` CLI +
+      `benchmarks/perplexity.md` (methodology + results table, all MEASURED) +
+      7 new tests. Results: exact == dense bit-identical (ppl 6.0111);
+      extreme Q4/Q2 +7.15 ppl at 3.14 bits/param; ternary stress +35.41.
+      Honest caveat: deltas only, do not transfer to real LLMs. Full suite
+      59/59 green.
 - [ ] Day 4 — Tue Oct 20: GGML INTEGRATION. Advance integrations/llama.cpp/:
       concrete minimal patch or pager-backed buffer prototype moving the design
       toward real C++ integration. Honest about what runs vs what's design.

@@ -63,12 +63,40 @@ additional degradation. The ecosystem standard for full intelligence is
 Q4_K_M-class quantization; Lacuna exact mode keeps you at exactly your
 source's level, never below.
 
+## Perplexity harness (Day 3 — MEASURED on a tiny model)
+
+The simulator's "does NOT model" line about Q2/ternary quality cost is now
+answered at small scale by `benchmarks/perplexity/`:
+
+- A ~260K-param numpy transformer (RMSNorm + MHA + SwiGLU), trained from
+  scratch on 60K tokens of deterministic synthetic English
+  (`benchmarks/perplexity/corpus.txt`), held-out eval on 12K tokens.
+- Four weight sets on the same eval text: dense FP32 baseline, `exact`
+  (RAW byte roundtrip — must equal dense bit-for-bit), `extreme` with the
+  PRODUCTION tier rule (`lacuna/convert.py::_tier_for`, 200 KiB threshold →
+  Q4 attn/norm/embed, Q2 FFN), and a 50 KiB "ternary stress" variant that
+  forces the cold tier on to isolate its cost.
+- Perplexity = exp(mean token NLL), teacher-forced, full eval set.
+- Run: `PYTHONPATH=. python -m benchmarks.perplexity.measure`
+  (or `lacuna perplexity`); writes `benchmarks/perplexity.md`.
+
+Label semantics: every number in `benchmarks/perplexity.md` is MEASURED
+(real forward passes through the real codecs) — but on a synthetic
+260K-param model, so the *deltas* are the finding and the absolute values
+do not transfer to real LLMs. Production pages use per-page scales (finer
+than the harness's per-tensor scales), so the measured extreme deltas are a
+conservative upper bound.
+
 ## What the simulator does NOT model
 
 - Prefill (long-prompt) performance — decode only.
 - KV-cache growth with context length.
-- Quality/perplexity impact of the Q2/ternary cold tiers (needs real evals).
 - PCIe contention, thermal throttling, OS background I/O.
+
+(Quality/perplexity impact of the Q2/ternary cold tiers was on this list
+until Day 3: it is now measured at tiny-model scale — see the perplexity
+harness section above and `benchmarks/perplexity.md`. A full-scale eval on
+a real LLM still needs a GPU box.)
 
 ## Reproducing
 
