@@ -9,8 +9,54 @@ NVMe footprint. All figures vendor-reported unless noted.
 |---|---|---|---|---|---|---|
 | Qwen3.8-Flash-Next | 180B (125B + 51B n-gram + 4B MTP) | 6B | 512 (10+1) | qwen-community-1.0 | ~185 GB (FP8) | **Best** — 6B active; 51B n-gram table is deterministic lookups, pure function of input text (exact prefetch, zero ML) |
 | DeepSeek V4.1 Flash | 552B (+~196B Engram) | 8B prefill / 16B decode | 384 (top-6) + 1 shared | MIT | ~510 GB | **Great** — tiny active set, best license; needs 500GB+ NVMe |
-| Kimi K3 | 2.8T | 104B | 896 (16 active) | modified MIT | ~1.56 TB | Poor on normal systems — 104B active/token ≈ 50GB+ streamed per token; datacenter territory even with paging |
-| Qwen3.8-2.4T-A95B | 2.4T | 95B | 512 (10+1) | custom | ~4.89 TB (BF16) | Poor on normal systems — same per-token math as K3 |
+
+## Trillion tier — Fahad's target list (2026-10-19: "runnable at any cost")
+
+Honest verdict rule, no exceptions: per-token weight movement =
+active_params × ~0.5 bytes (Q4). At 3.5 GB/s NVMe, anything over ~4 GB/token
+cannot run at usable speed on the FLOOR laptop.
+
+- **FLOOR** = RTX 2050 + 6 GB RAM + 500 GB NVMe (the minimum Lacuna promises)
+- **MID** = RTX 4050 6 GB + 16 GB RAM
+- **DESKTOP** = 64 GB RAM + fast 2 TB+ NVMe
+
+| # | Model | Total | Active / token | Experts (routing) | License | Disk (native) | Cold GB/token (EST.) | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Kimi K3 (Moonshot) | 2.8T | 104B | 896 (16/token) | Kimi K3 License (MIT-derived, revenue-tiered) | ~1.56 TB (MXFP4 native) | 52 | **DESKTOP only** — ~15 s/token cold; FLOOR/MID cannot. Doesn't fit 500 GB floor disk. |
+| 2 | Qwen3.8-Max (Qwen/Qwen3.8-2.4T-A95B) | 2.4T | 95B | 512 (10+1) | custom qwen3.8-max (revenue thresholds) | ~4.89 TB (BF16) | 47.5 | **DESKTOP only** — ~14 s/token cold; FLOOR/MID cannot. |
+| 3 | DeepSeek-V4-Pro-0813 | 1.6T | 49B | unknown | MIT | ~893 GB (FP4+FP8 mixed) | 24.5 | **DESKTOP only** — ~7 s/token cold; FLOOR/MID cannot. Best license in tier. |
+| 4 | LongCat-2.0 (Meituan) | 1.6T | ~48B (33–56B dynamic) | unknown | MIT (per coverage; verify on HF card) | ~3.2 TB BF16 / ~1.6 TB FP8 (EST.) | 24 | **DESKTOP only** — ~7 s/token cold. N-gram embedding = deterministic prefetch win (like Qwen3.8-Flash-Next). |
+| 5 | MiMo-V2.5-Pro (Xiaomi) | 1.02T | 42B | 384 (8/token) | MIT | ~1 TB FP8 (EST.) | 21 | **DESKTOP only** — ~6 s/token cold. MTP module aids throughput. |
+| 6 | Yuan3.0 Ultra (YuanLab) | 1010B | 68.8B | unknown | unknown — verify on HF card | ~2 TB BF16 (EST.) | 34.4 | **DESKTOP only** — ~10 s/token cold; heaviest mid-tier active set. |
+| 7 | Kimi K2.7 Code (Moonshot) | 1T | 32B | 384 (8+1 shared) | Modified MIT | ~595 GB (native INT4) | 16 | **DESKTOP** — ~4.6 s/token cold; closest to MID but still over the 4 GB line. Best trillion-tier coding fit. |
+| 8 | Ring-1T (inclusionAI) | 1T | 50B | unknown | unknown — not stated on card | ~1 TB FP8 / ~2 TB BF16 (EST.) | 25 | **DESKTOP only** — ~7 s/token cold. |
+| 9 | Inkling (Thinking Machines) | 975B | 41B | 256 routed + 2 shared (6/token) | Apache 2.0 | ~2 TB BF16 (EST.) / 270–285 GB (1-bit GGUF) | 20.5 | **DESKTOP only** — ~6 s/token cold. 1-bit GGUF fits a 500 GB floor disk; effort dial saves tokens. |
+| 10 | Muse Spark Open (Meta) | 816B | 42B | 256 (8/token) | Muse Model License (custom, limited commercial) | ~1.6 TB BF16 / ~484–530 GB NVFP4 | 21 | **DESKTOP only** — ~6 s/token cold. NVFP4 fits 500 GB floor disk. |
+
+### Trillion-tier honesty notes
+
+- **None of the 10 fit FLOOR or MID at usable speed** by the cold-math rule.
+  The trillion tier is DESKTOP territory (64 GB RAM + fast NVMe), where expert
+  hot-set caching — the same experts recur across tokens, so they stay parked
+  in RAM — cuts steady-state streaming far below the cold numbers above.
+- **Disk is a second wall.** On the 500 GB floor machine, only Inkling (1-bit
+  GGUF, ~270 GB) and Muse Spark Open (NVFP4, ~484 GB) physically fit. Everything
+  else needs 1–5 TB NVMe.
+- **Unknowns that block exact per-model planning:** DeepSeek-V4-Pro expert/routing
+  counts; LongCat-2.0 expert/routing; Yuan3.0 Ultra license + routing; Ring-1T
+  license + routing. Verify on the HuggingFace model cards before building
+  per-model prefetch paths.
+- **Sources:** Kimi K3 — moonshotai/Kimi-K3 HF card, digitalapplied.com,
+  k3-kimi.com; Qwen3.8-Max — Qwen/Qwen3.8-2.4T-A95B HF, digitalapplied.com,
+  llmcheck.net; DeepSeek-V4-Pro — vdf.ai, tokenhot.ai; LongCat-2.0 —
+  huggingface.co/meituan-longcat/LongCat-2.0, explainx.ai; MiMo-V2.5-Pro —
+  huggingface.co/XiaomiMiMo/MiMo-V2.5-Pro, mimo.xiaomi.com; Yuan3.0 Ultra —
+  arxiv.org/abs/2601.14327, huggingface.co/YuanLabAI/Yuan3.0-Ultra;
+  Kimi K2.7 Code — huggingface.co/moonshotai/Kimi-K2.7-Code, saipien.org;
+  Ring-1T — huggingface.co/inclusionAI/Ring-1T-FP8, arxiv.org/abs/2510.18855;
+  Inkling — kie.ai, ai-primer.com, datacamp.com; Muse Spark Open —
+  marktechpost.com, alphasignal.ai, techzei.com. All accessed 2026-10-19.
+  Figures marked EST. are arithmetic estimates (active × 0.5 bytes), not vendor claims.
 
 ## Why the ranking
 

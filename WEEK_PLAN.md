@@ -72,6 +72,13 @@ Rules for every run:
       no behavior changes, suite stays green. Prototype on branch `optimize`.
       Plus: more simulator scenarios (sparsity sweeps,
       K sweeps, bandwidth variants); updated honest tables in README + benchmarks/RESULTS.md.
+      (e) TRILLION-TIER BENCHMARK TARGET SET (Fahad's directive 2026-10-19): model the
+      10-model target list in the simulator — Kimi K3 (2.8T/104B), Qwen3.8-Max
+      (2.4T/95B), DeepSeek-V4-Pro (1.6T/49B), LongCat-2.0 (1.6T/~48B), MiMo-V2.5-Pro
+      (1.02T/42B), Yuan3.0 Ultra (1.01T/68.8B), Kimi K2.7 Code (1T/32B), Ring-1T
+      (1T/50B), Inkling (975B/41B), Muse Spark Open (816B/42B) — per-token weight
+      movement vs. tier verdicts (FLOOR/MID/DESKTOP) per docs/TARGET_MODELS.md.
+      Figures verified 2026-10-19; unknowns marked there.
 - [ ] Day 6 — Thu Oct 22: EASE OF USE (Fahad's directive 2026-10-19: "make it 100x
       better, faster, easier to use for anyone, with models and agents out there").
       (a) `lacuna pull <hf-id>` / `lacuna run <hf-id>`: one command from zero to chat —
