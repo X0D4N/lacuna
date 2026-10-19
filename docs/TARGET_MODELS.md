@@ -35,10 +35,18 @@ cannot run at usable speed on the FLOOR laptop.
 
 ### Trillion-tier honesty notes
 
-- **None of the 10 fit FLOOR or MID at usable speed** by the cold-math rule.
-  The trillion tier is DESKTOP territory (64 GB RAM + fast NVMe), where expert
-  hot-set caching — the same experts recur across tokens, so they stay parked
-  in RAM — cuts steady-state streaming far below the cold numbers above.
+- **Cold-start bound vs steady-state target.** The per-row verdicts above use
+  cold-start math (every page faulted from disk, nothing cached) — the
+  pessimistic bound. Lacuna's hot-set caching + lookahead prefetch exist
+  precisely to beat it: experts recur across tokens, so after warmup the
+  steady-state disk reads per word collapse toward the hot working set.
+  **The engineering target (Fahad's directive 2026-10-19): all 10 runnable on
+  MID (RTX 4050 6GB + 16GB RAM) — exact output, hard caps respected, system
+  never stressed.** What decides it per model is the expert working-set reuse
+  rate on real traces — measurable with `lacuna/prefetch.py: ShadowScorer`.
+  Cold numbers say MID cannot; the measurement program decides how far past
+  them the hot-set design gets. Until measured, the DESKTOP verdicts stand as
+  the conservative bound.
 - **Disk is a second wall.** On the 500 GB floor machine, only Inkling (1-bit
   GGUF, ~270 GB) and Muse Spark Open (NVFP4, ~484 GB) physically fit. Everything
   else needs 1–5 TB NVMe.
