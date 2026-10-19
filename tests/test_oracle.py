@@ -37,3 +37,21 @@ def test_union_and_save_load(tmp_path):
     o.save(p)
     o2 = Oracle.load(p)
     assert o2.metrics(1, X, Y) == o.metrics(1, X, Y)
+
+
+def test_predict_union_batched_matches_loop():
+    # The batched predict_union must be bit-identical to the per-token loop:
+    # same weights, same sigmoid, same threshold; OR is order-independent.
+    X, _ = _synthetic(n=50)
+    o = Oracle(n_layers=1, hidden_dim=16, n_units=64, mlp_hid=32, seed=3)
+    hiddens = [X[i] for i in range(8)]
+    for th in (0.2, 0.5, 0.9):
+        union = o.predict_union(0, hiddens, threshold=th)
+        ref = np.zeros(64, dtype=bool)
+        for h in hiddens:
+            ref |= o.predict_mask(0, h, th)
+        np.testing.assert_array_equal(union, ref)
+    # empty window -> all-False, same as the old loop version
+    np.testing.assert_array_equal(
+        o.predict_union(0, [], threshold=0.2), np.zeros(64, dtype=bool)
+    )

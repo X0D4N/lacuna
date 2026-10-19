@@ -20,6 +20,7 @@ Budget policy:
 from __future__ import annotations
 
 import ctypes
+import os
 import re
 import shutil
 import subprocess
@@ -158,4 +159,116 @@ def detect_hardware(
         page_mb=int(page_mb),
         spec_k=int(spec_k),
         has_gpu=has_gpu,
+    )
+
+
+# --------------------------------------------------------------------------
+# auto_tune(): zero-config tuning. Pure function of HardwareInfo so it is
+# unit-testable without real hardware: pass a synthetic HardwareInfo.
+#
+# Policy (documented, never silent):
+# - ram_cap  = min(6.0, 75% of RAM). Never exceeds 75% — the OS keeps the rest.
+# - vram_cap = 3.2 GB on a >=4 GB card, else 80% of VRAM, 0.0 with no GPU.
+# - page_size: 1 MiB on tiny boxes (<6 GB RAM, less waste), 2 MiB default,
+#   4 MiB on big machines (>=32 GB RAM, fewer syscalls per GB streamed).
+# - k_lookahead: 4 default; 6 on slow disks (<1 GB/s, more lookahead hides
+#   latency); 3 with no GPU (less speculation without device overlap).
+# - precision_policy: ALWAYS "exact". auto_tune never silently trades quality
+#   for speed — the user opts into "extreme" explicitly via CLI/API.
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class HardwareInfo:
+    """Everything auto_tune() needs. Build by hand for tests, or via
+    detect_hardware_info() on a real machine."""
+
+    ram_total_gb: float
+    vram_gb: float = 0.0
+    has_gpu: bool = False
+    nvme_bw_gbs: float = 3.5
+    disk_is_nvme: bool = True
+
+
+@dataclass(frozen=True)
+class TuneConfig:
+    ram_cap: float          # GB of RAM Lacuna may hold (<= 75% of total)
+    vram_cap: float         # GB of VRAM Lacuna may hold
+    page_size: int          # weight-page size in bytes
+    k_lookahead: int        # speculation lookahead depth
+    precision_policy: str   # always "exact" from auto_tune (see above)
+
+
+def auto_tune(info: HardwareInfo | None = None) -> TuneConfig:
+    """Return the recommended zero-config tuning for this hardware."""
+    hw = info if info is not None else detect_hardware_info()
+    ram = max(hw.ram_total_gb, 0.5)  # never divide by nonsense
+    ram_cap = min(6.0, 0.75 * ram)
+    if hw.has_gpu and hw.vram_gb >= 4.0:
+        vram_cap = 3.2
+    elif hw.has_gpu:
+        vram_cap = 0.8 * max(hw.vram_gb, 0.0)
+    else:
+        vram_cap = 0.0
+    if ram < 6.0:
+        page_size = 1 * 1024 * 1024
+    elif ram >= 32.0:
+        page_size = 4 * 1024 * 1024
+    else:
+        page_size = 2 * 1024 * 1024
+    if hw.nvme_bw_gbs < 1.0:
+        k = 6
+    elif not hw.has_gpu:
+        k = 3
+    else:
+        k = 4
+    return TuneConfig(
+        ram_cap=round(ram_cap, 2),
+        vram_cap=round(vram_cap, 2),
+        page_size=page_size,
+        k_lookahead=k,
+        precision_policy="exact",
+    )
+
+
+def _disk_is_nvme_linux(path: str) -> bool:
+    """Best-effort: True if the disk backing `path` is non-rotational.
+
+    Never raises; on any doubt returns True (the NVMe default) so behavior
+    matches the long-standing simulator assumption.
+    """
+    try:
+        st = os.stat(path if os.path.exists(path) else os.path.expanduser("~"))
+        major = os.major(st.st_dev)
+        # find the block device name via /sys/dev/block/<major>:<minor>
+        link = f"/sys/dev/block/{major}:{os.minor(st.st_dev)}"
+        dev = os.path.basename(os.readlink(link))
+        # strip partition suffix -> base device (nvme0n1p2 -> nvme0n1, sda1 -> sda)
+        base = re.sub(r"(nvme\d+n\d+)p\d+$", r"\1", dev)
+        base = re.sub(r"^(sd[a-z]|hd[a-z]|vd[a-z]|mmcblk\d+|nvme\d+n\d+)p?\d*$",
+                      r"\1", base)
+        with open(f"/sys/block/{base}/queue/rotational") as f:
+            return f.read().strip() == "0"
+    except (OSError, ValueError):
+        return True
+
+
+def detect_hardware_info(cache_dir: str | None = None) -> HardwareInfo:
+    """Detect real hardware into a HardwareInfo. Never raises."""
+    ram = _read_ram_gb()
+    vram, has_gpu = _read_vram_gb()
+    if sys.platform.startswith("linux"):
+        is_nvme = _disk_is_nvme_linux(
+            cache_dir or os.path.expanduser("~/.cache/lacuna"))
+        bw = 3.5 if is_nvme else 0.55  # NVMe default, SATA fallback
+    else:
+        # Windows 11: no cheap reliable disk-type probe via stdlib; keep the
+        # documented default and let measured runs override it.
+        is_nvme, bw = True, 3.5
+    return HardwareInfo(
+        ram_total_gb=ram,
+        vram_gb=vram,
+        has_gpu=has_gpu,
+        nvme_bw_gbs=bw,
+        disk_is_nvme=is_nvme,
     )

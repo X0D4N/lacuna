@@ -102,11 +102,20 @@ class Oracle:
         return self.predict_proba(layer, h) > threshold
 
     def predict_union(self, layer: int, hidden_list, threshold: float = 0.5) -> np.ndarray:
-        """OR of predicted masks over a K-token lookahead window of hidden states."""
-        union = np.zeros(self.n_units, dtype=bool)
-        for h in hidden_list:
-            union |= self.predict_mask(layer, h, threshold)
-        return union
+        """OR of predicted masks over a K-token lookahead window of hidden states.
+
+        Batched: a single forward pass over the stacked (K, hidden_dim) window
+        instead of K single-token passes. The math is identical (same weights,
+        same sigmoid, same threshold; boolean OR is order-independent), so the
+        union mask is bit-identical to the per-token loop — only Python-call
+        overhead is removed.
+        """
+        H = np.asarray(list(hidden_list), dtype=np.float64)
+        if H.shape[0] == 0:
+            return np.zeros(self.n_units, dtype=bool)
+        H = H.reshape(H.shape[0], -1)
+        _, _, p = self._mlps[layer].forward(H)
+        return (p > threshold).any(axis=0)
 
     def metrics(self, layer: int, X: np.ndarray, Y: np.ndarray, threshold: float = 0.5) -> dict:
         # Prefetch oracles operate recall-first: a lower threshold over-fetches

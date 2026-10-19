@@ -211,10 +211,18 @@ class PagedWeightStore:
         self._entries: list[dict] = []
         with open(path, "rb") as f:
             f.seek(table_off)
-            for _ in range(n_pages):
-                tid, layer, rs, re_, prec, _res, off = struct.unpack(
-                    ENTRY_FMT, f.read(ENTRY_SIZE)
+            # One bulk read for the whole table instead of one syscall per
+            # page; struct.iter_unpack parses it with identical results.
+            # A short read fails loud here (the old loop raised struct.error).
+            table_blob = f.read(n_pages * ENTRY_SIZE)
+            if len(table_blob) != n_pages * ENTRY_SIZE:
+                raise ValueError(
+                    f"truncated page table in {path}: expected "
+                    f"{n_pages * ENTRY_SIZE} bytes, got {len(table_blob)}"
                 )
+            for tid, layer, rs, re_, prec, _res, off in struct.iter_unpack(
+                ENTRY_FMT, table_blob
+            ):
                 self._entries.append(
                     {
                         "tensor_id": tid,
@@ -230,6 +238,17 @@ class PagedWeightStore:
             for _ in range(n_names):
                 (ln,) = struct.unpack("<I", f.read(4))
                 self.names.append(f.read(ln).decode("utf-8"))
+
+        # Indexes, built once: entries are immutable after init, so the public
+        # page table and per-tensor lookups are O(1)/O(tensor pages) instead
+        # of O(n_pages) scans per call (buffer allocs once per layer).
+        for i, e in enumerate(self._entries):
+            e["page_id"] = i
+        self._page_table: list[dict] = self._entries  # shared, read-only
+        self._name_to_id = {n: i for i, n in enumerate(self.names)}
+        self._tensor_index: dict[int, list[dict]] = {}
+        for e in self._page_table:
+            self._tensor_index.setdefault(e["tensor_id"], []).append(e)
 
         if _ON_WINDOWS:
             self._fd = -1  # os.pread unavailable; reads go through _win_f
@@ -266,7 +285,10 @@ class PagedWeightStore:
         # decode packed length from rows/cols/codec
         bpr = { _q.Q4: 0.5, _q.Q2: 0.25, _q.TERNARY: 0.25 }[prec]
         nbytes = int(rows * cols * bpr + 3)
-        packed = np.frombuffer(raw[PAGE_HDR_SIZE : PAGE_HDR_SIZE + nbytes], dtype=np.uint8).copy()
+        # No .copy(): dequantize only reads its input and returns a fresh
+        # array, so the transient view is safe (and cheaper) here. The RAW
+        # path below keeps its copy — that array IS the cached page.
+        packed = np.frombuffer(raw[PAGE_HDR_SIZE : PAGE_HDR_SIZE + nbytes], dtype=np.uint8)
         arr = _q.dequantize(packed, np.float32(scale), (rows, cols), prec)
         return arr, PAGE_HDR_SIZE + nbytes
 
@@ -299,7 +321,8 @@ class PagedWeightStore:
             self.stats["faults"] += 1
             self.stats["bytes_read"] += nbytes
             self._insert(idx, arr, nbytes)
-        self._freq[idx] = 0.9 * self._freq.get(idx, 0.0) + 0.1
+        freq = self._freq  # local bind: one attribute lookup per call
+        freq[idx] = 0.9 * freq.get(idx, 0.0) + 0.1
         return arr
 
     def is_resident(self, idx: int) -> bool:
@@ -327,15 +350,23 @@ class PagedWeightStore:
         than the whole budget cannot be held, in which case it is re-faulted
         on every call and ``are_resident`` stays False (loud, not silent).
         """
-        faults = 0
+        # De-dupe once, preserving first-seen (fault) order; then detect the
+        # miss set under a single lock acquisition instead of one per page.
+        # get_page re-checks under its own lock, so the fault semantics are
+        # identical to the per-page version.
         seen = set()
+        uniq: list[int] = []
         for i in page_ids:
-            if i in seen:
-                continue
-            seen.add(i)
-            if not self.is_resident(i):
-                self.get_page(i)  # synchronous fault; updates stats
-                faults += 1
+            if i not in seen:
+                seen.add(i)
+                uniq.append(i)
+        with self._lock:
+            cache = self._cache
+            missing = [i for i in uniq if i not in cache]
+        faults = 0
+        for i in missing:
+            self.get_page(i)  # synchronous fault; updates stats
+            faults += 1
         return faults
 
     def prefetch(self, indices) -> None:
@@ -362,9 +393,20 @@ class PagedWeightStore:
         """Public read of the .lac page table: one dict per page with
         ``page_id``, ``tensor_id``, ``layer``, ``row_start``, ``row_end``,
         ``precision`` and file ``offset``. Used by ``lacuna.buffer`` to map
-        tensors to their pages without touching pager internals."""
-        with self._lock:
-            return [{"page_id": i, **e} for i, e in enumerate(self._entries)]
+        tensors to their pages without touching pager internals.
+
+        The returned list is shared and read-only (built once at init) — do
+        not mutate it. Previously this rebuilt every dict on every call.
+        """
+        return self._page_table
+
+    def tensor_id(self, name: str) -> int | None:
+        """Tensor id for a tensor name, or None if unknown. O(1)."""
+        return self._name_to_id.get(name)
+
+    def tensor_pages(self, tensor_id: int) -> list[dict]:
+        """Page-table rows for one tensor, in row order. Shared, read-only."""
+        return self._tensor_index.get(tensor_id, [])
 
     def page_shape(self, page_id: int) -> tuple[int, int]:
         """(rows, cols) of a page from its on-disk header. No payload read."""

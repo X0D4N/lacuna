@@ -47,6 +47,7 @@ Stdlib + numpy only. Linux + Windows 11.
 
 from __future__ import annotations
 
+import bisect
 from collections import OrderedDict
 
 import numpy as np
@@ -84,6 +85,9 @@ class BufferTensor:
         self.shape = shape
         self.dtype = np.float32
         self.pages = list(pages)  # [(page_id, row_start, row_end)]
+        # Precomputed for bind_pages: rebuilding this set per call was pure
+        # overhead on the hot path.
+        self.page_id_set = frozenset(pid for pid, _, _ in self.pages)
 
     @property
     def page_ids(self) -> list[int]:
@@ -114,6 +118,10 @@ class PagerBackedBuffer:
             raise ValueError("capacity_bytes must be positive")
         self._arena = bytearray(self.capacity)
         self._free: list[tuple[int, int]] = [(0, self.capacity)]  # (offset, size)
+        # Running total of free bytes: _evict_to_fit used to recompute
+        # sum(size for _, size in self._free) on every eviction iteration
+        # (O(F) per iteration); the counter makes it O(1).
+        self._free_bytes = self.capacity
         self._resident: dict[int, tuple[int, int]] = {}  # page_id -> (offset, nbytes)
         self._lru: "OrderedDict[int, None]" = OrderedDict()  # eviction order
         self._tensors: dict[str, BufferTensor] = {}
@@ -127,8 +135,10 @@ class PagerBackedBuffer:
         for i, (off, size) in enumerate(self._free):
             if size >= nbytes:
                 del self._free[i]
+                self._free_bytes -= size  # whole region leaves the free pool
                 if size > nbytes:
                     self._free.insert(i, (off + nbytes, size - nbytes))
+                    self._free_bytes += size - nbytes  # remainder returns
                 return off
         # _evict_to_fit freed everything evictable; what remains is genuinely full
         raise BufferCapacityError(
@@ -137,8 +147,11 @@ class PagerBackedBuffer:
 
     def _release_region(self, off: int, nbytes: int) -> None:
         nbytes = _align(nbytes)
-        self._free.append((off, nbytes))
-        self._free.sort()
+        self._free_bytes += nbytes
+        # The free list is kept sorted; insort is O(F) vs O(F log F) for
+        # append + full sort, with an identical resulting list.
+        idx = bisect.bisect_left(self._free, (off, nbytes))
+        self._free.insert(idx, (off, nbytes))
         merged = []
         for o, s in self._free:
             if merged and merged[-1][0] + merged[-1][1] == o:
@@ -151,7 +164,7 @@ class PagerBackedBuffer:
         """LRU-evict resident pages until nbytes are free. Eviction marks the
         page not-resident buffer-side (the C++ "buffer marked not-resident on
         eviction"); the next bind re-faults it — loud and counted."""
-        while sum(s for _, s in self._free) < nbytes and self._lru:
+        while self._free_bytes < nbytes and self._lru:
             pid, _ = self._lru.popitem(last=False)
             off, nb = self._resident.pop(pid)
             self._release_region(off, nb)
@@ -160,27 +173,26 @@ class PagerBackedBuffer:
     # -- tensor geometry --------------------------------------------
 
     def _tensor_pages(self, name: str):
-        """[(page_id, row_start, row_end), ...] for a tensor, in row order."""
-        try:
-            tid = self.store.names.index(name)
-        except ValueError:
-            raise BufferError(f"tensor {name!r} not in {self.store.path}") from None
-        table = self.store.page_table()
-        rows = [
-            (e["page_id"], e["row_start"], e["row_end"])
-            for e in table
-            if e["tensor_id"] == tid
-        ]
-        if not rows:
-            raise BufferError(f"tensor {name!r} has no pages")
-        by_id = {e["page_id"]: e for e in table}
-        for pid, rs, re in rows:
-            if by_id[pid]["precision"] == _q.RAW or rs == re == 0:
+        """[(page_id, row_start, row_end), ...] for a tensor, in row order.
+
+        O(tensor pages) via the store's index — the old version rescanned the
+        whole page table on every alloc (O(n_pages) per layer).
+        """
+        tid = self.store.tensor_id(name)
+        if tid is None:
+            raise BufferError(f"tensor {name!r} not in {self.store.path}")
+        rows = []
+        for e in self.store.tensor_pages(tid):
+            rs, re = e["row_start"], e["row_end"]
+            if e["precision"] == _q.RAW or rs == re == 0:
                 raise BufferError(
-                    f"tensor {name!r} page {pid} is opaque RAW bytes (no row "
+                    f"tensor {name!r} page {e['page_id']} is opaque RAW bytes (no row "
                     f"geometry) — the prototype binds decoded float32 pages; "
                     f"the C++ port handles pre-quantized blocks natively"
                 )
+            rows.append((e["page_id"], rs, re))
+        if not rows:
+            raise BufferError(f"tensor {name!r} has no pages")
         return rows
 
     # -- public contract --------------------------------------------
@@ -231,7 +243,7 @@ class PagerBackedBuffer:
         faults NVMe is the store's own accounting (``store.stats``).
         """
         wanted = set(page_ids)
-        unknown = wanted - set(tensor.page_ids)
+        unknown = wanted - tensor.page_id_set
         if unknown:
             raise BufferError(
                 f"tensor {tensor.name!r}: pages {sorted(unknown)} not in tensor"
@@ -283,7 +295,9 @@ class PagerBackedBuffer:
     def touch(self, tensor: BufferTensor) -> None:
         """LRU + EWMA update for resident pages, no I/O — the ``pager_touch``
         half of the seam. Keeps the pager's hot-set coherent with buffer use."""
-        for pid in tensor.page_ids:
+        # Iterate tensor.pages (row order) rather than rebuilding the page_ids
+        # list: identical LRU order, no per-call list construction.
+        for pid, _, _ in tensor.pages:
             if pid in self._resident:
                 self._lru.move_to_end(pid)
                 self.store.get_page(pid)  # hit path: LRU + EWMA, never faults
@@ -358,6 +372,7 @@ class PagerBackedBuffer:
         self.bind_pages(tensor, [pid for pid, _, _ in wanted])
 
         out = np.zeros(rows, dtype=np.float32)
+        touched: list[int] = []
         for pid, rs, re in wanted:
             off, _nb = self._resident[pid]
             page = np.frombuffer(
@@ -368,7 +383,10 @@ class PagerBackedBuffer:
                 out[rs:re] = page @ x
             else:
                 out[rs:re][m] = page[m] @ x
-            self.touch_pages([pid])
+            touched.append(pid)
+        # One batched touch instead of one store.get_page (lock acquisition)
+        # per page: LRU end-order and per-page EWMA updates are identical.
+        self.touch_pages(touched)
         return out
 
 

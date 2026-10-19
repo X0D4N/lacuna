@@ -2,7 +2,10 @@
 
 Subcommands:
   run       auto-detect hardware, auto-convert GGUF->.lac if needed, generate
-  serve     OpenAI-compatible HTTP server (stdlib http.server)
+            (accepts a HuggingFace id too: pull-if-missing, then run)
+  pull      download a Hub GGUF + auto-convert to .lac (one command)
+  serve     OpenAI-compatible HTTP server (stdlib http.server);
+            --ollama serves the Ollama-compatible API instead
   convert   GGUF -> .lac explicitly
   mcp       MCP server over stdio (JSON-RPC) for agent integration
   bench     run the hardware simulator and print the honest tok/s table
@@ -15,9 +18,39 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from .hardware import detect_hardware
+
+
+def _resolve_model(model: str) -> str:
+    """Turn a CLI model argument into a local model path.
+
+    - "mock" / existing file path / *.gguf / *.lac -> returned as-is
+    - anything with a "/" (e.g. "Qwen/Qwen3-32B") -> treated as a
+      HuggingFace id: pull-if-missing (idempotent), returns the .lac path
+    """
+    if model == "mock" or os.path.exists(model):
+        return model
+    if model.endswith((".gguf", ".lac")):
+        return model  # Engine reports a clear error if the file is missing
+    if "/" in model:
+        from .pull import pull as _pull
+
+        def _progress(done, total):
+            if total:
+                pct = 100.0 * done / total
+                print(f"\r  downloading: {done/1e9:.2f}/{total/1e9:.2f} GB "
+                      f"({pct:.0f}%)", end="", flush=True)
+            else:
+                print(f"\r  downloading: {done/1e9:.2f} GB", end="", flush=True)
+
+        print(f"resolving '{model}' from the HuggingFace Hub...", flush=True)
+        lac = _pull(model, progress=_progress)
+        print(f"\nmodel ready: {lac}", flush=True)
+        return lac
+    return model
 
 
 def _cmd_run(a) -> int:
@@ -25,7 +58,8 @@ def _cmd_run(a) -> int:
 
     hw = detect_hardware()
     print(f"lacuna v{__import__('lacuna').__version__} | {hw.summary()}", flush=True)
-    eng = Engine(a.model, hardware=hw, exact=a.exact)
+    model = _resolve_model(a.model)
+    eng = Engine(model, hardware=hw, exact=a.exact)
     print(f"mode: {eng.mode} | exact: {eng.exact} | precision: {eng.precision_policy}", flush=True)
     prompt = a.prompt or sys.stdin.read().strip() or "Hello"
     print(eng.generate(prompt, max_tokens=a.max_tokens), flush=True)
@@ -35,11 +69,42 @@ def _cmd_run(a) -> int:
 
 def _cmd_serve(a) -> int:
     from .engine import Engine
-    from .server import serve
 
     eng = Engine(a.model)
-    print(f"serving OpenAI-compatible API on :{a.port} (mode={eng.mode})", flush=True)
-    serve(eng, host=a.host, port=a.port)
+    if a.ollama:
+        from .ollama_shim import serve_ollama
+
+        print(f"serving Ollama-compatible API on :{a.port} (mode={eng.mode})",
+              flush=True)
+        print("point any Ollama client at "
+              f"http://{a.host}:{a.port}", flush=True)
+        serve_ollama(eng, host=a.host, port=a.port)
+    else:
+        from .server import serve
+
+        print(f"serving OpenAI-compatible API on :{a.port} (mode={eng.mode})", flush=True)
+        serve(eng, host=a.host, port=a.port)
+    return 0
+
+
+def _cmd_pull(a) -> int:
+    from .pull import pull as _pull
+
+    def _progress(done, total):
+        if total:
+            pct = 100.0 * done / total
+            print(f"\r  {done/1e9:.2f}/{total/1e9:.2f} GB ({pct:.0f}%)",
+                  end="", flush=True)
+        else:
+            print(f"\r  {done/1e9:.2f} GB", end="", flush=True)
+
+    try:
+        lac = _pull(a.hf_id, progress=None if a.quiet else _progress,
+                    precision_policy=a.precision_policy)
+    except Exception as e:
+        print(f"\npull failed: {e}", flush=True)
+        return 1
+    print(f"\nready: {lac}", flush=True)
     return 0
 
 
@@ -157,7 +222,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("model", nargs="?", default="mock")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8080)
+    p.add_argument("--ollama", action="store_true",
+                   help="serve the Ollama-compatible API (/api/generate, "
+                        "/api/chat, /api/tags) instead of the OpenAI one, "
+                        "so any Ollama client/agent works unchanged")
     p.set_defaults(fn=_cmd_serve)
+
+    p = sub.add_parser("pull", help="download a Hub model GGUF + auto-convert to .lac")
+    p.add_argument("hf_id", help="HuggingFace id, e.g. Qwen/Qwen3-32B")
+    p.add_argument("--precision-policy", choices=["exact", "extreme"],
+                   default="exact",
+                   help="exact: bit-identical source bytes (default); "
+                        "extreme: adaptive Q4/Q2/ternary tiering")
+    p.add_argument("--quiet", action="store_true",
+                   help="no progress output")
+    p.set_defaults(fn=_cmd_pull)
 
     p = sub.add_parser("convert", help="convert GGUF -> .lac")
     p.add_argument("input")

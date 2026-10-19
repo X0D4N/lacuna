@@ -16,10 +16,19 @@ __version__ = "0.2.0"
 
 from .buffer import BufferCapacityError, BufferError, PagerBackedBuffer, tiled_exact_matvec
 from .engine import Engine, LacunaEngine
-from .hardware import HardwareTier, detect_hardware
+from .hardware import (
+    HardwareInfo,
+    HardwareTier,
+    TuneConfig,
+    auto_tune,
+    detect_hardware,
+    detect_hardware_info,
+)
+from .ollama_shim import InferenceBackend, build_ollama_server, serve_ollama
 from .oracle import Oracle
 from .pager import PagedWeightStore, LacWriter
 from .prefetch import CacheExpertPredictor, NgramPrefetcher, NgramSpec, ShadowScorer
+from .pull import PullError, download, list_gguf_files, pick_gguf, pull
 from .quant import (
     POLICY_EXACT,
     POLICY_EXTREME,
@@ -42,7 +51,9 @@ __all__ = [
     "BufferError",
     "CacheExpertPredictor",
     "Engine",
+    "HardwareInfo",
     "HardwareTier",
+    "InferenceBackend",
     "LacunaEngine",
     "NgramPrefetcher",
     "NgramSpec",
@@ -50,16 +61,26 @@ __all__ = [
     "OverlapScheduler",
     "PagedWeightStore",
     "PagerBackedBuffer",
+    "PullError",
+    "TuneConfig",
     "LacWriter",
     "POLICY_EXACT",
     "POLICY_EXTREME",
     "PRECISION_POLICIES",
+    "auto_tune",
+    "build_ollama_server",
     "detect_hardware",
+    "detect_hardware_info",
+    "download",
+    "list_gguf_files",
     "pack_q2",
     "pack_q4",
     "pack_ternary",
+    "pick_gguf",
+    "pull",
     "roundtrip_max_error",
     "ShadowScorer",
+    "serve_ollama",
     "simulate_overlap",
     "speculative_generate",
     "speculative_tree_generate",
