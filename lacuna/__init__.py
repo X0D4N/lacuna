@@ -14,6 +14,7 @@ Stdlib + numpy only.
 
 __version__ = "0.2.0"
 
+from .buffer import BufferCapacityError, BufferError, PagerBackedBuffer, tiled_exact_matvec
 from .engine import Engine, LacunaEngine
 from .hardware import HardwareTier, detect_hardware
 from .oracle import Oracle
@@ -36,12 +37,15 @@ from .speculate import speculative_generate, speculative_tree_generate
 
 __all__ = [
     "__version__",
+    "BufferCapacityError",
+    "BufferError",
     "Engine",
     "HardwareTier",
     "LacunaEngine",
     "Oracle",
     "OverlapScheduler",
     "PagedWeightStore",
+    "PagerBackedBuffer",
     "LacWriter",
     "POLICY_EXACT",
     "POLICY_EXTREME",
@@ -54,6 +58,7 @@ __all__ = [
     "simulate_overlap",
     "speculative_generate",
     "speculative_tree_generate",
+    "tiled_exact_matvec",
     "unpack_q2",
     "unpack_q4",
     "unpack_ternary",

@@ -358,6 +358,24 @@ class PagedWeightStore:
         with self._lock:
             return list(self._cache.keys())
 
+    def page_table(self) -> list[dict]:
+        """Public read of the .lac page table: one dict per page with
+        ``page_id``, ``tensor_id``, ``layer``, ``row_start``, ``row_end``,
+        ``precision`` and file ``offset``. Used by ``lacuna.buffer`` to map
+        tensors to their pages without touching pager internals."""
+        with self._lock:
+            return [{"page_id": i, **e} for i, e in enumerate(self._entries)]
+
+    def page_shape(self, page_id: int) -> tuple[int, int]:
+        """(rows, cols) of a page from its on-disk header. No payload read."""
+        e = self._entries[page_id]
+        prec, rows, cols, _scale = struct.unpack(
+            PAGE_HDR_FMT, self._read_at(e["offset"], PAGE_HDR_SIZE)
+        )
+        if prec != e["precision"]:
+            raise ValueError(f"page {page_id}: header/table precision mismatch")
+        return rows, cols
+
     def frequency(self, idx: int) -> float:
         return self._freq.get(idx, 0.0)
 

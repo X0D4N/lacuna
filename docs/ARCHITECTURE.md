@@ -173,6 +173,10 @@ lacuna/          # the engine (Python package)
   speculate.py       # M5 draft-verify loop (linear + tree)
   quant.py           # M6 adaptive per-page precision
   convert.py         # GGUF -> .lac paged format
+  buffer.py          # pager-backed buffer: runnable ggml backend-buffer seam
+                     # (alloc/bind/ensure_resident/touch/row-masked matvec,
+                     # per-layer tiled_exact_matvec) — the Python side of the
+                     # C++ patch in integrations/llama.cpp/sp_buffer.cpp
   engine.py          # orchestration on top of llama.cpp (+ one-line Engine API)
   hardware.py        # tier detection: Linux + Windows 11 only
   cli.py             # zero-setup CLI: run/serve/convert/mcp/bench
@@ -180,7 +184,9 @@ lacuna/          # the engine (Python package)
   mcp_server.py      # MCP server over stdio for agent integration
 simulator/           # discrete-event hardware simulator -> honest tok/s
 tests/               # unit + small-model e2e correctness
-integrations/llama.cpp/  # hooks/patch notes for llama.cpp integration
+integrations/llama.cpp/  # sp_buffer.{h,cpp}: pager-backed ggml backend buffer
+                     # type (interface prototype, syntax-checked) + INTEGRATION.md
+                     # (seam design: buffer type, oracle-gated matmuls, prefetch)
 benchmarks/          # methodology + result tables
 docs/                # this file, design notes, dark-themed site source
 ```

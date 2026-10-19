@@ -1,9 +1,11 @@
 # Lacuna — Week Hardening Plan (Oct 17–23, 2026)
 
 Owner: Fahad. Deadline: Saturday Oct 24, 2026 — professional, future-invention level,
-trending-ready. Push to CYPHERLYNX/lacuna happens Saturday AFTER Fahad creates the
-empty public repo in the GitHub web UI (connector got 403 on creation) and provides
-a PAT or installs the Muse GitHub app. Do NOT push before that.
+trending-ready. **UPDATE 2026-10-18: repo is LIVE at https://github.com/CYPHERLYNX/lacuna**
+(repo created + full history pushed via his classic PAT; branch `master`).
+His PAT stays ACTIVE (7-day expiry; he re-pastes the value when a push is needed —
+I never store the value). Remaining day-tracks commit locally; push each day's commit
+when he supplies the token, otherwise leave queued.
 
 Daily cron (`lacuna-week-hardening`) implements the next unchecked track below.
 Serena (oraios/serena, MCP coding toolkit) is installed (`~/.local/bin/serena`)
@@ -43,9 +45,15 @@ Rules for every run:
       extreme Q4/Q2 +7.15 ppl at 3.14 bits/param; ternary stress +35.41.
       Honest caveat: deltas only, do not transfer to real LLMs. Full suite
       59/59 green.
-- [ ] Day 4 — Tue Oct 20: GGML INTEGRATION. Advance integrations/llama.cpp/:
-      concrete minimal patch or pager-backed buffer prototype moving the design
-      toward real C++ integration. Honest about what runs vs what's design.
+- [x] Day 4 — Tue Oct 20: GGML INTEGRATION. DONE 2026-10-19 (a day early):
+      `lacuna/buffer.py` (`PagerBackedBuffer`: alloc/bind/ensure_resident fence/
+      touch/LRU eviction/row-masked matvec/per-layer `tiled_exact_matvec`) +
+      `tests/test_buffer.py` (11 tests, all MEASURED — masked rows bit-identical
+      vs op-identical reference, unmasked pages never fault, eviction loud) +
+      `integrations/llama.cpp/sp_buffer.{h,cpp}` (C++ buffer-type translation,
+      `g++ -fsyntax-only -Wall -Wextra` clean against local shim; real-tree
+      compile pending a GPU box) + `page_table()`/`page_shape()` pager accessors.
+      Full suite 70/70 green. INTEGRATION.md §1 sketch superseded by the files.
 - [ ] Day 5 — Wed Oct 21: BENCHMARK EXPANSION. More simulator scenarios
       (sparsity sweeps, K sweeps, bandwidth variants); updated honest tables in
       README + benchmarks/RESULTS.md.

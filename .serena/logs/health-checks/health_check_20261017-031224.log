@@ -1,0 +1,88 @@
+INFO  2026-10-17 03:12:24,792 serena.cli:health_check:1055 - Starting health check for project: /home/hatch/workspace/lacuna
+INFO  2026-10-17 03:12:24,793 serena.cli:health_check:1059 - Creating SerenaAgent with disabled dashboard...
+INFO  2026-10-17 03:12:24,793 serena.util.file_system:_load_gitignore_files:306 - Processing .gitignore file: /home/hatch/workspace/lacuna/.gitignore
+INFO  2026-10-17 03:12:24,801 serena.util.file_system:_load_gitignore_files:306 - Processing .gitignore file: /home/hatch/workspace/lacuna/.serena/.gitignore
+INFO  2026-10-17 03:12:24,809 serena.agent:__init__:647 - Will record tool usage statistics with token count estimator: CHAR_COUNT.
+INFO  2026-10-17 03:12:24,813 serena.util.file_system:stop:336 - Loading of .gitignore files completed in 0.021 seconds
+INFO  2026-10-17 03:12:24,815 serena.project:stop:336 - Gathering ignore spec for project lacuna completed in 0.023 seconds
+INFO  2026-10-17 03:12:24,815 serena.agent:__init__:651 - Starting Serena server (version=2.0.0, process id=34319, parent process id=34318; language backend=LSP); Python version=3.13.16, platform=Linux-7.0.0-39-generic-x86_64-with-glibc2.39
+INFO  2026-10-17 03:12:24,815 serena.agent:__init__:655 - Configuration file: /home/hatch/.serena/serena_config.yml
+INFO  2026-10-17 03:12:24,815 serena.agent:__init__:656 - Available projects: lacuna
+INFO  2026-10-17 03:12:24,815 serena.agent:__init__:657 - Loaded tools (53): create_text_file, replace_content, replace_in_files, delete_lines, replace_lines, insert_at_line, replace_symbol_body, insert_after_symbol, insert_before_symbol, read_file, list_dir, find_file, search_for_pattern, restart_language_server, get_symbols_overview, find_symbol, find_referencing_symbols, find_implementations, find_declaration, get_diagnostics_for_file, get_diagnostics_for_symbol, rename_symbol, safe_delete_symbol, write_memory, read_memory, list_memories, delete_memory, rename_memory, edit_memory, execute_shell_command, open_dashboard, activate_project, remove_project, get_current_config, onboarding, initial_instructions, serena_info, jet_brains_find_symbol, jet_brains_move, jet_brains_safe_delete, jet_brains_inline_symbol, jet_brains_find_referencing_symbols, jet_brains_get_symbols_overview, jet_brains_type_hierarchy, jet_brains_find_declaration, jet_brains_find_implementations, jet_brains_rename, jet_brains_debug, jet_brains_run_inspections, jet_brains_list_inspections, list_queryable_projects, query_project, serena_repl
+INFO  2026-10-17 03:12:24,816 serena.config.serena_config:determine_language_backend:1575 - Using language backend from global configuration: LSP
+INFO  2026-10-17 03:12:24,816 serena.config.serena_config:determine_agent_interface:1564 - Using agent interface 'REPL' (global configuration)
+INFO  2026-10-17 03:12:24,893 serena.config.serena_config:start:329 - Loading project instance for RegisteredProject[project_root=/home/hatch/workspace/lacuna, project_config=ProjectConfig[project_name=lacuna]] starting ...
+INFO  2026-10-17 03:12:24,893 serena.project:__init__:54 - Serena project data folder: /home/hatch/workspace/lacuna/.serena
+INFO  2026-10-17 03:12:24,896 serena.project:start:329 - Gathering ignore spec for project lacuna starting ...
+INFO  2026-10-17 03:12:24,896 serena.project:_gather_ignorespec:102 - Using 1 ignored paths from the global configuration.
+INFO  2026-10-17 03:12:24,896 serena.util.file_system:start:329 - Loading of .gitignore files starting ...
+INFO  2026-10-17 03:12:24,896 serena.util.file_system:_load_gitignore_files:306 - Processing .gitignore file: /home/hatch/workspace/lacuna/.gitignore
+INFO  2026-10-17 03:12:24,897 serena.util.file_system:_load_gitignore_files:306 - Processing .gitignore file: /home/hatch/workspace/lacuna/.serena/.gitignore
+INFO  2026-10-17 03:12:24,900 serena.util.file_system:stop:336 - Loading of .gitignore files completed in 0.004 seconds
+INFO  2026-10-17 03:12:24,900 serena.project:stop:336 - Gathering ignore spec for project lacuna completed in 0.004 seconds
+INFO  2026-10-17 03:12:24,901 serena.config.serena_config:stop:336 - Loading project instance for RegisteredProject[project_root=/home/hatch/workspace/lacuna, project_config=ProjectConfig[project_name=lacuna]] completed in 0.008 seconds
+INFO  2026-10-17 03:12:24,901 serena.agent:activate_project_from_path_or_name:1535 - Found registered project 'lacuna' at path /home/hatch/workspace/lacuna
+INFO  2026-10-17 03:12:24,901 serena.agent:_activate_project:1423 - Activating lacuna at /home/hatch/workspace/lacuna
+INFO  2026-10-17 03:12:24,901 serena.task_executor:issue_task:219 - Scheduling Task-1:init_project_services
+INFO  2026-10-17 03:12:24,901 serena.agent:_update_active_modes:1287 - Active modes (2): editing, interactive
+INFO  2026-10-17 03:12:24,901 serena.agent:__init__:708 - Number of exposed tools: 3. Exposed tools: ['activate_project', 'initial_instructions', 'serena_repl']
+INFO  2026-10-17 03:12:24,902 serena.agent:_update_active_tools:1310 - Active tools (3): activate_project, initial_instructions, serena_repl
+INFO  2026-10-17 03:12:24,904 serena.cli:health_check:1062 - SerenaAgent created successfully
+INFO  2026-10-17 03:12:24,904 serena.cli:health_check:1065 - Searching for analyzable files...
+INFO  2026-10-17 03:12:24,906 serena.cli:health_check:1074 - Found analyzable file: simulator/simulate.py
+INFO  2026-10-17 03:12:24,906 serena.cli:health_check:1085 - Testing get_symbols_overview on file: simulator/simulate.py
+INFO  2026-10-17 03:12:24,909 serena.task_executor:issue_task:219 - Scheduling Task-2:<lambda>
+INFO  2026-10-17 03:12:24,917 serena.task_executor:_process_task_queue:141 - Starting execution of Task-1:init_project_services
+INFO  2026-10-17 03:12:24,918 serena.task_executor:start:329 - Task-1:init_project_services starting ...
+INFO  2026-10-17 03:12:24,919 serena.lsp.lsp_backend:start:329 - Language server initialization starting ...
+INFO  2026-10-17 03:12:24,920 serena.project:create_language_server_manager:667 - Creating language server manager for /home/hatch/workspace/lacuna
+INFO  2026-10-17 03:12:24,920 sensai.util.logging:start:329 - Language server startup (ls_id=python) starting ...
+INFO  2026-10-17 03:12:24,922 serena.ls_manager:create_language_server:60 - Creating language server instance for /home/hatch/workspace/lacuna, language=python.
+INFO  2026-10-17 03:12:24,930 solidlsp.ls:_load_raw_document_symbols_cache:3078 - Loading document symbols cache from /home/hatch/workspace/lacuna/.serena/cache/python/raw_document_symbols.pkl
+INFO  2026-10-17 03:12:24,939 solidlsp.ls:_load_raw_document_symbols_cache:3083 - Loaded 23 entries from raw document symbols cache.
+INFO  2026-10-17 03:12:24,940 solidlsp.ls:_load_document_symbols_cache:3113 - Loading document symbols cache from /home/hatch/workspace/lacuna/.serena/cache/python/document_symbols.pkl
+INFO  2026-10-17 03:12:24,954 solidlsp.ls:_load_document_symbols_cache:3118 - Loaded 23 entries from document symbols cache.
+INFO  2026-10-17 03:12:24,957 solidlsp.ls:start:3209 - Starting language server python for /home/hatch/workspace/lacuna
+INFO  2026-10-17 03:12:24,958 solidlsp.language_servers.pyright_server:_start_server:217 - Starting pyright-langserver server process
+INFO  2026-10-17 03:12:24,958 solidlsp.ls_process:_start:528 - Starting language server process via command: ['/home/hatch/.local/bin/uvx', '-p', '3.13', '--from', 'pyright==1.1.403', 'pyright-langserver', '--stdio']
+INFO  2026-10-17 03:12:25,002 solidlsp.initialize_params:_apply_updates:76 - Workspace folders: ['/home/hatch/workspace/lacuna']
+INFO  2026-10-17 03:12:25,002 solidlsp.language_servers.pyright_server:_start_server:223 - Sending initialize request from LSP client to pyright server and awaiting response
+INFO  2026-10-17 03:12:26,993 solidlsp.language_servers.pyright_server:window_log_message:139 - LSP: window/logMessage: Pyright language server 1.1.403 starting
+INFO  2026-10-17 03:12:26,996 solidlsp.language_servers.pyright_server:window_log_message:139 - LSP: window/logMessage: Server root directory: file:///home/hatch/.cache/uv/archive-v0/_oZ6v_4Txoqnye8f/lib/python3.13/site-packages/pyright/dist/dist
+INFO  2026-10-17 03:12:27,002 solidlsp.language_servers.pyright_server:window_log_message:139 - LSP: window/logMessage: Starting service instance "lacuna"
+INFO  2026-10-17 03:12:27,006 solidlsp.language_servers.pyright_server:_start_server:225 - Received initialize response from pyright server: {'capabilities': {'textDocumentSync': 2, 'definitionProvider': {'workDoneProgress': True}, 'declarationProvider': {'workDoneProgress': True}, 'typeDefinitionProvider': {'workDoneProgress': True}, 'referencesProvider': {'workDoneProgress': True}, 'documentSymbolProvider': {'workDoneProgress': True}, 'workspaceSymbolProvider': {'workDoneProgress': True}, 'hoverProvider': {'workDoneProgress': True}, 'documentHighlightProvider': {'workDoneProgress': True}, 'renameProvider': {'prepareProvider': True, 'workDoneProgress': True}, 'completionProvider': {'triggerCharacters': ['.', '[', '"', "'"], 'resolveProvider': True, 'workDoneProgress': True, 'completionItem': {'labelDetailsSupport': True}}, 'signatureHelpProvider': {'triggerCharacters': ['(', ',', ')'], 'workDoneProgress': True}, 'codeActionProvider': {'codeActionKinds': ['quickfix', 'source.organizeImports'], 'workDoneProgress': True}, 'executeCommandProvider': {'commands': [], 'workDoneProgress': True}, 'callHierarchyProvider': True, 'workspace': {'workspaceFolders': {'supported': True, 'changeNotifications': True}}}}
+INFO  2026-10-17 03:12:27,006 solidlsp.language_servers.pyright_server:_start_server:237 - Waiting up to 60.0s for Pyright to complete initial workspace analysis...
+INFO  2026-10-17 03:12:27,586 solidlsp.language_servers.pyright_server:window_log_message:139 - LSP: window/logMessage: Loading pyproject.toml file at /home/hatch/workspace/lacuna/pyproject.toml
+INFO  2026-10-17 03:12:27,587 solidlsp.language_servers.pyright_server:window_log_message:139 - LSP: window/logMessage: No include entries specified; assuming /home/hatch/workspace/lacuna
+INFO  2026-10-17 03:12:27,587 solidlsp.language_servers.pyright_server:window_log_message:139 - LSP: window/logMessage: Auto-excluding **/node_modules
+INFO  2026-10-17 03:12:27,587 solidlsp.language_servers.pyright_server:window_log_message:139 - LSP: window/logMessage: Auto-excluding **/__pycache__
+INFO  2026-10-17 03:12:27,587 solidlsp.language_servers.pyright_server:window_log_message:139 - LSP: window/logMessage: Auto-excluding **/.*
+INFO  2026-10-17 03:12:27,587 solidlsp.language_servers.pyright_server:window_log_message:139 - LSP: window/logMessage: Assuming Python version 3.13.16.final.0
+INFO  2026-10-17 03:12:27,587 solidlsp.language_servers.pyright_server:window_log_message:139 - LSP: window/logMessage: Found 25 source files
+INFO  2026-10-17 03:12:27,587 solidlsp.language_servers.pyright_server:window_log_message:144 - Pyright workspace scanning complete
+INFO  2026-10-17 03:12:27,587 solidlsp.language_servers.pyright_server:_start_server:239 - Pyright initial analysis complete, server ready
+INFO  2026-10-17 03:12:27,587 sensai.util.logging:stop:336 - Language server startup (ls_id=python) completed in 2.667 seconds
+INFO  2026-10-17 03:12:27,588 sensai.util.logging:start:329 - Initialising file change notifier (polling for baseline) starting ...
+INFO  2026-10-17 03:12:27,592 sensai.util.logging:stop:336 - Initialising file change notifier (polling for baseline) completed in 0.004 seconds
+INFO  2026-10-17 03:12:27,592 serena.lsp.lsp_backend:stop:336 - Language server initialization completed in 2.673 seconds
+INFO  2026-10-17 03:12:27,592 serena.task_executor:stop:336 - Task-1:init_project_services completed in 2.674 seconds
+INFO  2026-10-17 03:12:27,592 serena.task_executor:_process_task_queue:141 - Starting execution of Task-2:<lambda>
+INFO  2026-10-17 03:12:27,592 serena.task_executor:start:329 - Task-2:<lambda> starting ...
+INFO  2026-10-17 03:12:27,600 serena.task_executor:stop:336 - Task-2:<lambda> completed in 0.008 seconds
+INFO  2026-10-17 03:12:27,601 serena.cli:health_check:1087 - get_symbols_overview returned: {"Constant": ["NVME_BW_GBS", "EFFECTIVE_TFLOPS", "TAIL_FACTOR", "SCENARIOS"], "Function": ["_tok_s", "scenario_a", "scenario_b", "scenario_c", "scenario_d", "run_all", "markdown_table", "main"]}
+INFO  2026-10-17 03:12:27,602 serena.cli:health_check:1102 - Using symbol for testing: _tok_s (kind: Function)
+INFO  2026-10-17 03:12:27,602 serena.cli:health_check:1105 - Testing find_symbol for symbol: _tok_s
+INFO  2026-10-17 03:12:27,603 serena.task_executor:issue_task:219 - Scheduling Task-3:<lambda>
+INFO  2026-10-17 03:12:27,701 serena.task_executor:_process_task_queue:141 - Starting execution of Task-3:<lambda>
+INFO  2026-10-17 03:12:27,702 serena.task_executor:start:329 - Task-3:<lambda> starting ...
+INFO  2026-10-17 03:12:27,706 serena.task_executor:stop:336 - Task-3:<lambda> completed in 0.004 seconds
+INFO  2026-10-17 03:12:27,707 serena.cli:health_check:1111 - find_symbol found 1 matches for symbol _tok_s
+INFO  2026-10-17 03:12:27,707 serena.cli:health_check:1116 - Testing find_referencing_symbols for symbol: _tok_s
+INFO  2026-10-17 03:12:27,707 serena.task_executor:issue_task:219 - Scheduling Task-4:<lambda>
+INFO  2026-10-17 03:12:27,807 serena.task_executor:_process_task_queue:141 - Starting execution of Task-4:<lambda>
+INFO  2026-10-17 03:12:27,808 serena.task_executor:start:329 - Task-4:<lambda> starting ...
+INFO  2026-10-17 03:12:27,809 serena.ls_manager:sync_file_system_changes:281 - Polling file system for changes to source files ...
+INFO  2026-10-17 03:12:27,812 serena.ls_manager:sync_file_system_changes:283 - File system polling complete; 0 change events sent to language servers.
+INFO  2026-10-17 03:12:30,029 serena.task_executor:stop:336 - Task-4:<lambda> completed in 2.221 seconds
+INFO  2026-10-17 03:12:30,033 serena.cli:health_check:1123 - find_referencing_symbols found 4 references for symbol _tok_s
+INFO  2026-10-17 03:12:30,037 serena.cli:health_check:1132 - Health check completed successfully
