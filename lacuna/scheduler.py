@@ -154,6 +154,13 @@ class OverlapScheduler:
         for s in range(min(self.k, n_steps)):
             pending[s] = self._pool.submit(_fetch, s)
 
+        # Per-step stats accumulate in locals and flush once at the end: the
+        # worker-thread _fetch updates above keep their own locking, and every
+        # future is .result()ed before the loop exits, so the final totals are
+        # identical with far fewer lock acquisitions on the hot path.
+        exact_faults = 0
+        misses = 0
+        compute_s = 0.0
         for step in range(n_steps):
             fut = pending.pop(step, None)
             if fut is not None:
@@ -167,8 +174,7 @@ class OverlapScheduler:
             if exact:
                 # Guarantee point: full required set resident BEFORE compute.
                 faults = ensure_fn(required)
-                with self._lock:
-                    self.stats["exact_faults"] += faults
+                exact_faults += faults
                 if is_resident is not None and not all(
                     is_resident(p) for p in required
                 ):
@@ -178,16 +184,17 @@ class OverlapScheduler:
                 if is_resident is not None:
                     for pid in pages_for_step(step):
                         if not is_resident(pid):
-                            with self._lock:
-                                self.stats["misses"] += 1
+                            misses += 1
                             fetch_fn([pid])  # on-demand fault (counted)
 
             t0 = time.perf_counter()
             results.append(compute_fn(step))
-            with self._lock:
-                self.stats["total_compute_s"] += time.perf_counter() - t0
-                self.stats["steps"] += 1
+            compute_s += time.perf_counter() - t0
         with self._lock:
+            self.stats["exact_faults"] += exact_faults
+            self.stats["misses"] += misses
+            self.stats["total_compute_s"] += compute_s
+            self.stats["steps"] += n_steps
             self.stats["exact_guarantee_held"] = held
         return results
 

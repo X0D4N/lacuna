@@ -62,20 +62,24 @@ def pack_q4(x: np.ndarray) -> tuple[np.ndarray, np.float32, tuple[int, ...]]:
     x = np.asarray(x, dtype=np.float32)
     scale = np.float32(np.max(np.abs(x)))  # stored as-is; 0.0 decodes to exact zeros
     enc = scale if scale != 0 else np.float32(1.0)
-    q = np.clip(np.round(x / enc * 7.0), -8, 7).astype(np.int64) + 8  # 0..15
-    flat = q.reshape(-1)
+    # Codes are exactly 0..15: go straight to uint8 (the old int64 intermediate
+    # was a wasted full pass over the array; values are unaffected).
+    q = np.clip(np.round(x / enc * 7.0), -8, 7) + 8.0
+    flat = q.astype(np.uint8).reshape(-1)
     if flat.size % 2:
-        flat = np.concatenate([flat, np.array([8], dtype=np.int64)])  # pad = zero
-    packed = (flat[0::2] | (flat[1::2] << 4)).astype(np.uint8)
+        flat = np.concatenate([flat, np.array([8], dtype=np.uint8)])  # pad = zero
+    packed = flat[0::2] | (flat[1::2] << 4)  # uint8 | uint8 -> uint8
     return packed, scale, x.shape
 
 
 def unpack_q4(packed: np.ndarray, scale: np.float32, shape: tuple[int, ...]) -> np.ndarray:
     packed = np.asarray(packed, dtype=np.uint8)
-    flat = np.empty(packed.size * 2, dtype=np.float32)
-    flat[0::2] = (packed & 0x0F).astype(np.float32)
-    flat[1::2] = ((packed >> 4) & 0x0F).astype(np.float32)
-    vals = (flat - 8.0) / 7.0 * float(scale)
+    # One uint8 code buffer + a single float32 conversion, instead of two
+    # per-nibble float32 temporaries. Decoded values are bit-identical.
+    codes = np.empty(packed.size * 2, dtype=np.uint8)
+    codes[0::2] = packed & 0x0F
+    codes[1::2] = (packed >> 4) & 0x0F
+    vals = (codes.astype(np.float32) - 8.0) / 7.0 * float(scale)
     return vals[: int(np.prod(shape))].reshape(shape)
 
 
