@@ -19,6 +19,7 @@ from .engine import Engine, LacunaEngine
 from .hardware import HardwareTier, detect_hardware
 from .oracle import Oracle
 from .pager import PagedWeightStore, LacWriter
+from .prefetch import CacheExpertPredictor, NgramPrefetcher, NgramSpec, ShadowScorer
 from .quant import (
     POLICY_EXACT,
     POLICY_EXTREME,
@@ -39,9 +40,12 @@ __all__ = [
     "__version__",
     "BufferCapacityError",
     "BufferError",
+    "CacheExpertPredictor",
     "Engine",
     "HardwareTier",
     "LacunaEngine",
+    "NgramPrefetcher",
+    "NgramSpec",
     "Oracle",
     "OverlapScheduler",
     "PagedWeightStore",
@@ -55,6 +59,7 @@ __all__ = [
     "pack_q4",
     "pack_ternary",
     "roundtrip_max_error",
+    "ShadowScorer",
     "simulate_overlap",
     "speculative_generate",
     "speculative_tree_generate",
