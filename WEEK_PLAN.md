@@ -54,31 +54,18 @@ Rules for every run:
       `g++ -fsyntax-only -Wall -Wextra` clean against local shim; real-tree
       compile pending a GPU box) + `page_table()`/`page_shape()` pager accessors.
       Full suite 70/70 green. INTEGRATION.md §1 sketch superseded by the files.
-- [ ] Day 5 — Wed Oct 21: BENCHMARK EXPANSION + THE 9/10 PROGRAM (Fahad's directive
-      2026-10-19: push confidence from 6/10 to 9/10 by measurement, not claims).
-      (a) Shadow-mode oracle scoring: run Lacuna's page predictor alongside real
-      llama.cpp inference on a real MoE GGUF, measure page-hit rate on real weights
-      with zero effect on output — converts "simulator says" into measured hit rates.
-      (b) Deterministic n-gram prefetch: for n-gram-embedding models (Qwen3.8-Flash-Next),
-      needed embedding rows are a pure function of the input text — computable with zero
-      ML; implement exact prefetch, no oracle needed for those 51B params.
-      (c) Cache-style expert predictor: per-expert 2-bit saturating counters + bigram
-      Markov table on expert activation sequences, updated online per token — zero
-      training, adapts to any MoE in minutes. Prototype on branch `prefetch-9of10`,
-      full pytest green before merge. (d) FULL OPTIMIZATION SWEEP (Fahad's directive
-      2026-10-19: "optimise, make it whole 100x better"): profile hot paths with
-      cProfile, vectorize numpy bottlenecks, kill redundant copies (views/mmap),
-      streamline scheduler + pager + oracle; measure before/after on the simulator,
-      no behavior changes, suite stays green. Prototype on branch `optimize`.
-      Plus: more simulator scenarios (sparsity sweeps,
-      K sweeps, bandwidth variants); updated honest tables in README + benchmarks/RESULTS.md.
-      (e) TRILLION-TIER BENCHMARK TARGET SET (Fahad's directive 2026-10-19): model the
-      10-model target list in the simulator — Kimi K3 (2.8T/104B), Qwen3.8-Max
-      (2.4T/95B), DeepSeek-V4-Pro (1.6T/49B), LongCat-2.0 (1.6T/~48B), MiMo-V2.5-Pro
-      (1.02T/42B), Yuan3.0 Ultra (1.01T/68.8B), Kimi K2.7 Code (1T/32B), Ring-1T
-      (1T/50B), Inkling (975B/41B), Muse Spark Open (816B/42B) — per-token weight
-      movement vs. tier verdicts (FLOOR/MID/DESKTOP) per docs/TARGET_MODELS.md.
-      Figures verified 2026-10-19; unknowns marked there.
+- [x] Day 5 — Wed Oct 21: BENCHMARK EXPANSION + THE 9/10 PROGRAM. DONE
+      2026-10-20 (a day early): (b)(c) n-gram + cache-expert prefetch and
+      (d) optimization sweep already merged 2026-10-19 (2926bfe); (e) new
+      `simulator/sweeps.py` models all 10 trillion-tier targets — cold
+      GB/token reproduces docs/TARGET_MODELS.md exactly, all cold verdicts
+      DESKTOP-only, MID steady-state shows Kimi K2.7 Code closest (~4.4
+      tok/s); sparsity/K/bandwidth sweeps (K diminishing past ~4, linear in
+      NVMe) in README + benchmarks/RESULTS.md, all SIMULATED-labeled;
+      `tests/test_sweeps.py` (11 tests). Full suite 111/111 green.
+      BLOCKED: (a) shadow-mode scoring on REAL weights — prototype measured
+      16x over random on synthetic patterns only; needs a GPU box with a
+      real MoE GGUF + llama.cpp (not available on this box).
 - [ ] Day 6 — Thu Oct 22: EASE OF USE (Fahad's directive 2026-10-19: "make it 100x
       better, faster, easier to use for anyone, with models and agents out there").
       (a) `lacuna pull <hf-id>` / `lacuna run <hf-id>`: one command from zero to chat —

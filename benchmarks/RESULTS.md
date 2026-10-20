@@ -18,6 +18,54 @@ stream into a usable ~3.5 tok/s on the target box; MoE-100B-class models (d)
 with small active parameter counts run fast. Dense 100B will never feel like a
 3B model on this hardware — physics forbids it; "usable" is the honest target.
 
+## Simulator sweeps (ALL NUMBERS SIMULATED)
+
+2026-10-20, `python -m simulator.sweeps` (module `simulator/sweeps.py`,
+parity-tested against `simulator/simulate.py` scenario_c in
+`tests/test_sweeps.py`). Same stated assumptions as the table above;
+union-mask growth vs K is a stated guess (5%/depth, = 1.2x at K=4) until
+shadow scoring measures it on real weights (blocked: needs a GPU box).
+
+| Oracle sparsity | 80% | 85% | 90% | 95% | 97% |
+|---|---|---|---|---|---|
+| tok/s | 1.77 | 2.36 | 3.54 | 7.08 | 11.80 |
+
+| Spec depth K | 1 | 2 | 3 | 4 | 5 | 6 | 8 |
+|---|---|---|---|---|---|---|---|
+| tok/s | 1.27 | 2.24 | 2.98 | 3.54 | 3.96 | 4.26 | 4.62 |
+
+| NVMe GB/s | 1.75 | 3.50 | 7.00 |
+|---|---|---|---|
+| tok/s | 1.77 | 3.54 | 7.08 |
+
+Reading: sparsity is the dominant lever (90% → 97% doubles tok/s twice);
+K has diminishing returns past ~4 at the stated 0.85 acceptance; the
+fetch-bound regime scales linearly with NVMe bandwidth.
+
+### Trillion-tier target list: per-token weight movement (SIMULATED)
+
+Specs from `docs/TARGET_MODELS.md` (sourced there). Cold = active × 0.5
+bytes/token; MID steady state = 95% hot-set residency (Fahad's 2026-10-19
+target — an aspiration for the shadow-scorer to earn, not a claim).
+
+| Model | Active/token | Cold GB/token | Cold tok/s | MID steady GB/token | MID steady tok/s | Cold verdict |
+|---|---|---|---|---|---|---|
+| Kimi K3 | 104B | 52.0 | 0.07 | 2.60 | 1.3 | DESKTOP only |
+| Qwen3.8-Max | 95B | 47.5 | 0.07 | 2.38 | 1.5 | DESKTOP only |
+| DeepSeek-V4-Pro | 49B | 24.5 | 0.14 | 1.23 | 2.9 | DESKTOP only |
+| LongCat-2.0 | 48B | 24.0 | 0.15 | 1.20 | 2.9 | DESKTOP only |
+| MiMo-V2.5-Pro | 42B | 21.0 | 0.17 | 1.05 | 3.3 | DESKTOP only |
+| Yuan3.0 Ultra | 68.8B | 34.4 | 0.10 | 1.72 | 2.0 | DESKTOP only |
+| Kimi K2.7 Code | 32B | 16.0 | 0.22 | 0.80 | 4.4 | DESKTOP only |
+| Ring-1T | 50B | 25.0 | 0.14 | 1.25 | 2.8 | DESKTOP only |
+| Inkling | 41B | 20.5 | 0.17 | 1.03 | 3.4 | DESKTOP only |
+| Muse Spark Open | 42B | 21.0 | 0.17 | 1.05 | 3.3 | DESKTOP only |
+
+Reading: every model moves > 4 GB/token cold → DESKTOP-only cold, no
+exceptions, reproducing the doc's verdicts. Kimi K2.7 Code (32B active,
+native INT4) is closest to MID at ~4.4 tok/s steady — the decider is expert
+working-set reuse on real traces, measured by the ShadowScorer.
+
 ## Perplexity: exact vs extreme precision (MEASURED, tiny model)
 
 2026-10-18, `benchmarks/perplexity/measure.py` (also `lacuna perplexity`).
@@ -39,13 +87,19 @@ this tiny model at 3.14 bits/param; forcing the ternary cold tier on costs
 
 ## Measured (tests/)
 
-- `pytest tests/` — 59 passed: pager roundtrip + budget enforcement, oracle
+- `pytest tests/` — **111 passed** (2026-10-20): pager roundtrip + budget enforcement, oracle
   recall ≥ 0.85 at the recall-first operating point, quant error ordering
   (Q4 < Q2 < ternary, all finite), scheduler overlap speedup > 1, converter
   roundtrip of a synthetic GGUF, one-line Engine API, HTTP endpoints, MCP
   stdio smoke test, oracle recipes (13), perplexity harness (7: training
   learns, exact == dense bitwise, extreme degrades gracefully, production
-  tier rule, ternary stress, determinism).
+  tier rule, ternary stress, determinism), GGML buffer contract (11:
+  masked rows bit-identical vs op-identical reference, unmasked pages never
+  fault, eviction loud), prefetch primitives + 9/10 program, optimization
+  sweep (behavior-preserving), ease-of-use (pull/Ollama shim/auto-tune),
+  simulator sweeps (11: parity with scenario_c, sparsity/K/bandwidth
+  monotonicity, trillion specs reproduce docs/TARGET_MODELS.md, all cold
+  verdicts DESKTOP-only).
 
 ## To measure on real hardware
 

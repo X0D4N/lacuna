@@ -42,6 +42,29 @@ simulated 3.5 tok/s sits at that ceiling's edge, which is exactly where the
 real-hardware validation in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md)
 will confirm or correct it.
 
+### Sweeps (ALL NUMBERS SIMULATED)
+
+100B, full Lacuna stack — `python -m simulator.sweeps`. Same stated
+assumptions as the table above.
+
+| Oracle sparsity | 80% | 85% | 90% | 95% | 97% |
+|---|---|---|---|---|---|
+| tok/s | 1.77 | 2.36 | 3.54 | 7.08 | 11.80 |
+
+| Spec depth K | 1 | 2 | 3 | 4 | 5 | 6 | 8 |
+|---|---|---|---|---|---|---|---|
+| tok/s | 1.27 | 2.24 | 2.98 | 3.54 | 3.96 | 4.26 | 4.62 |
+
+| NVMe GB/s | 1.75 | 3.50 | 7.00 |
+|---|---|---|---|
+| tok/s | 1.77 | 3.54 | 7.08 |
+
+Trillion tier: all 10 target models in [`docs/TARGET_MODELS.md`](docs/TARGET_MODELS.md)
+move >4 GB/token cold (active params × 0.5 bytes at Q4) → **DESKTOP-only
+cold**, no exceptions. At the 95%-hot-set MID steady-state target, Kimi K2.7
+Code reaches ~4.4 tok/s — closest to MID, exactly as the doc predicts.
+Full per-model table in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
+
 ## Install
 
 Linux and Windows 11 only. No macOS support, by design.
