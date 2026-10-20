@@ -40,13 +40,17 @@ cannot run at usable speed on the FLOOR laptop.
   pessimistic bound. Lacuna's hot-set caching + lookahead prefetch exist
   precisely to beat it: experts recur across tokens, so after warmup the
   steady-state disk reads per word collapse toward the hot working set.
-  **The engineering target (Fahad's directive 2026-10-19): all 10 runnable on
-  MID (RTX 4050 6GB + 16GB RAM) — exact output, hard caps respected, system
-  never stressed.** What decides it per model is the expert working-set reuse
-  rate on real traces — measurable with `lacuna/prefetch.py: ShadowScorer`.
-  Cold numbers say MID cannot; the measurement program decides how far past
-  them the hot-set design gets. Until measured, the DESKTOP verdicts stand as
-  the conservative bound.
+  **The engineering target (Fahad's directive 2026-10-19, corrected
+  2026-10-20): all 10 runnable on the FLOOR (RTX 2050 + 6GB RAM) — exact
+  output, hard caps respected, system never stressed.** (Not MID — the floor
+  is the min spec for the trillion tier too.) What decides it per model is
+  the expert working-set reuse rate on real traces under a 4.5GB hot-set
+  budget — measurable with `lacuna/prefetch.py: ShadowScorer`.
+  Cold numbers say the floor cannot; the measurement program decides how far
+  past them the hot-set design gets. Until measured, the DESKTOP verdicts
+  stand as the conservative bound. One physical caveat: models larger than
+  the disk itself (e.g. Kimi K3 at ~1.56TB) need a bigger NVMe — no software
+  fixes a disk that's too small.
 - **Disk is a second wall.** On the 500 GB floor machine, only Inkling (1-bit
   GGUF, ~270 GB) and Muse Spark Open (NVFP4, ~484 GB) physically fit. Everything
   else needs 1–5 TB NVMe.
