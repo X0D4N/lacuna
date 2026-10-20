@@ -429,6 +429,26 @@ class PagedWeightStore:
         with self._lock:
             return list(self._cache.keys())
 
+    # -- warm start ------------------------------------------------
+
+    def save_hotset(self, cache_path: str) -> dict:
+        """Persist the current hot-set (page ids + frequencies + per-page
+        CRC32 of the stored bytes) for a warm next start. Never raises;
+        see :mod:`lacuna.warmstart` for the safety model."""
+        from .warmstart import save_hotset
+
+        return save_hotset(self, cache_path)
+
+    def restore_hotset(self, cache_path: str) -> dict:
+        """Restore a hot-set saved by :meth:`save_hotset`, re-validating
+        every page against the store's current bytes before use. Pages
+        that fail validation are skipped (they fault on demand later);
+        a stale or corrupt cache degrades to a cold start, never to
+        wrong data. Never raises. Returns a report dict."""
+        from .warmstart import restore_hotset
+
+        return restore_hotset(self, cache_path)
+
     def page_table(self) -> list[dict]:
         """Public read of the .lac page table: one dict per page with
         ``page_id``, ``tensor_id``, ``layer``, ``row_start``, ``row_end``,

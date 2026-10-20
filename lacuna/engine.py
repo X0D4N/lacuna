@@ -258,6 +258,10 @@ class Engine:
     ``precision_policy``: "exact" (default; bit-identical source bytes),
     "extreme" (adaptive Q4/Q2/ternary; fastest, documented tradeoff), or None
     to derive from ``exact`` ("exact" if exact else "extreme").
+    ``warm_start=True`` (default): restore the persisted hot-set on open and
+    save it on :meth:`close`, so repeat runs start with the working set
+    already resident (see :mod:`lacuna.warmstart`; validated per page, a
+    stale cache degrades to a cold start, never to wrong data).
     """
 
     def __init__(
@@ -266,10 +270,12 @@ class Engine:
         hardware: HardwareTier | None = None,
         exact: bool = True,
         precision_policy: str | None = None,
+        warm_start: bool = True,
     ):
         self.hw = hardware or detect_hardware()
         self.model_path = model_path
         self.exact = bool(exact)
+        self.warm_start = bool(warm_start)
         self.precision_policy = precision_policy or (
             _q.POLICY_EXACT if self.exact else _q.POLICY_EXTREME
         )
@@ -302,6 +308,11 @@ class Engine:
         elif self.libllama is not None:
             self.mode = "libllama-dense"
 
+        if self.store is not None and self.warm_start:
+            from .warmstart import default_hotset_path
+
+            self.store.restore_hotset(default_hotset_path(self.store.path))
+
         self._engine = LacunaEngine(self.hw, store=self.store, exact=self.exact)
 
     def generate(self, prompt: str, max_tokens: int = 32) -> str:
@@ -312,6 +323,10 @@ class Engine:
 
     def close(self):
         if self.store is not None:
+            if self.warm_start:
+                from .warmstart import default_hotset_path
+
+                self.store.save_hotset(default_hotset_path(self.store.path))
             self.store.close()
             self.store = None
         self._engine.scheduler.close()

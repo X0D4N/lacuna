@@ -44,6 +44,7 @@ from .quant import (
 )
 from .scheduler import OverlapScheduler, simulate_overlap
 from .speculate import speculative_generate, speculative_tree_generate
+from .warmstart import default_hotset_path, restore_hotset, save_hotset
 
 __all__ = [
     "__version__",
@@ -69,6 +70,7 @@ __all__ = [
     "PRECISION_POLICIES",
     "auto_tune",
     "build_ollama_server",
+    "default_hotset_path",
     "detect_hardware",
     "detect_hardware_info",
     "download",
@@ -78,7 +80,9 @@ __all__ = [
     "pack_ternary",
     "pick_gguf",
     "pull",
+    "restore_hotset",
     "roundtrip_max_error",
+    "save_hotset",
     "ShadowScorer",
     "serve_ollama",
     "simulate_overlap",
