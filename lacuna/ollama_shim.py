@@ -40,6 +40,14 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Protocol, runtime_checkable
 
+from .http_util import (
+    RequestError,
+    chat_prompt,
+    clamp_max_tokens,
+    read_json_body,
+    request_path,
+)
+
 
 @runtime_checkable
 class InferenceBackend(Protocol):
@@ -91,22 +99,15 @@ class _OllamaHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_json(self):
-        try:
-            n = int(self.headers.get("Content-Length", 0))
-        except ValueError:
-            n = 0
-        if n <= 0:
-            return {}
-        try:
-            return json.loads(self.rfile.read(n).decode("utf-8") or "{}")
-        except (ValueError, UnicodeDecodeError):
-            return {}
-
     def log_message(self, *a):  # quiet
         pass
 
-    def _backend_for(self, name: str):
+    def _backend_for(self, name):
+        if not isinstance(name, str):
+            self._send_json(
+                {"error": "model must be a string; send "
+                          "{\"model\": \"<name>\", ...}"}, 400)
+            return None
         if not name:
             name = self.default_model
         be = self.registry.get(name)
@@ -123,21 +124,24 @@ class _OllamaHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         # stream word-by-word: simple, honest chunking of the final text
-        for word in text.split(" "):
-            if chat:
-                obj = {"model": self.default_model,
-                       "message": {"role": "assistant",
-                                   "content": word + " "},
-                       "done": False}
-            else:
-                obj = {"model": self.default_model,
-                       "response": word + " ", "done": False}
-            self.wfile.write((json.dumps(obj) + "\n").encode())
-        self.wfile.write(b'{"done": true}\n')
+        try:
+            for word in text.split(" "):
+                if chat:
+                    obj = {"model": self.default_model,
+                           "message": {"role": "assistant",
+                                       "content": word + " "},
+                           "done": False}
+                else:
+                    obj = {"model": self.default_model,
+                           "response": word + " ", "done": False}
+                self.wfile.write((json.dumps(obj) + "\n").encode())
+            self.wfile.write(b'{"done": true}\n')
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client disconnected mid-stream
 
     # -- routes --------------------------------------------------
     def do_GET(self):
-        if self.path in ("/api/tags", "/api/tags/"):
+        if request_path(self.path) in ("/api/tags", "/api/tags/"):
             models = [
                 {"name": name,
                  "model": name,
@@ -153,37 +157,47 @@ class _OllamaHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
     def do_POST(self):
-        body = self._read_json()
-        if self.path == "/api/generate":
-            be = self._backend_for(body.get("model", ""))
-            if be is None:
-                return
-            prompt = str(body.get("prompt", ""))
-            max_tokens = int(body.get("max_tokens", 32) or 32)
-            if body.get("stream"):
-                self._ndjson_stream(be, prompt, max_tokens, chat=False)
+        # Clean JSON for every failure (see server.py); no stack traces.
+        try:
+            body = read_json_body(self)
+            path = request_path(self.path)
+            if path == "/api/generate":
+                be = self._backend_for(body.get("model", ""))
+                if be is None:
+                    return
+                prompt = body.get("prompt", "")
+                if not isinstance(prompt, str):
+                    raise RequestError(
+                        400, 'prompt must be a string; send {"prompt": "..."}.')
+                max_tokens = clamp_max_tokens(body)
+                if body.get("stream"):
+                    self._ndjson_stream(be, prompt, max_tokens, chat=False)
+                else:
+                    text = be.generate(prompt, max_tokens=max_tokens)
+                    self._send_json({"model": body.get("model") or self.default_model,
+                                     "response": text, "done": True})
+            elif path == "/api/chat":
+                be = self._backend_for(body.get("model", ""))
+                if be is None:
+                    return
+                prompt = chat_prompt(body)
+                max_tokens = clamp_max_tokens(body)
+                if body.get("stream"):
+                    self._ndjson_stream(be, prompt, max_tokens, chat=True)
+                else:
+                    text = be.generate(prompt, max_tokens=max_tokens)
+                    self._send_json(
+                        {"model": body.get("model") or self.default_model,
+                         "message": {"role": "assistant", "content": text},
+                         "done": True})
             else:
-                text = be.generate(prompt, max_tokens=max_tokens)
-                self._send_json({"model": body.get("model") or self.default_model,
-                                 "response": text, "done": True})
-        elif self.path == "/api/chat":
-            be = self._backend_for(body.get("model", ""))
-            if be is None:
-                return
-            messages = body.get("messages", [])
-            prompt = " ".join(
-                str(m.get("content", "")) for m in messages if isinstance(m, dict))
-            max_tokens = int(body.get("max_tokens", 32) or 32)
-            if body.get("stream"):
-                self._ndjson_stream(be, prompt, max_tokens, chat=True)
-            else:
-                text = be.generate(prompt, max_tokens=max_tokens)
-                self._send_json(
-                    {"model": body.get("model") or self.default_model,
-                     "message": {"role": "assistant", "content": text},
-                     "done": True})
-        else:
-            self._send_json({"error": "not found"}, 404)
+                self._send_json({"error": "not found"}, 404)
+        except RequestError as e:
+            self._send_json({"error": e.message}, e.status)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:  # backend failure: one clean line, no trace
+            self._send_json({"error": f"generation failed: {e}"}, 500)
 
 
 def build_ollama_server(backend: InferenceBackend | None = None,
@@ -218,7 +232,7 @@ def serve_ollama(backend: InferenceBackend | None = None,
                  host: str = "127.0.0.1", port: int = 11434,
                  model_name: str = "lacuna",
                  cache_dir: str | None = None,
-                 extra_models: dict | None = None):
+                 extra_models: dict | None = None) -> None:
     """Start the Ollama-compatible server (blocking).
 
     ``backend`` is the default model served as ``model_name``; every ``.lac``

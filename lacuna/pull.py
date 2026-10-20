@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -96,9 +97,25 @@ def pick_gguf(files: list[dict]) -> dict:
 
 def _cache_paths(hf_id: str, filename: str,
                  cache_dir: str = DEFAULT_CACHE_DIR) -> tuple[str, str]:
+    """Cache paths for a Hub file, traversal-proof.
+
+    Both ``hf_id`` and ``filename`` ultimately come from a remote JSON
+    response, so neither is trusted: the model directory must be a single
+    plain path component, and the resolved file path must stay inside it
+    (hub repos may legitimately nest GGUFs in subfolders — allowed, as
+    long as the path cannot escape the model's cache directory).
+    """
     safe = hf_id.replace("/", "__")
+    if safe in ("", ".", "..") or "\\" in safe:
+        raise PullError(f"unsafe model id: {hf_id!r}")
     model_dir = os.path.join(cache_dir, "models", safe)
-    gguf_path = os.path.join(model_dir, filename)
+    gguf_path = os.path.normpath(os.path.join(model_dir, filename))
+    if os.path.commonpath(
+        [os.path.abspath(gguf_path), os.path.abspath(model_dir)]
+    ) != os.path.abspath(model_dir):
+        raise PullError(
+            f"unsafe filename from the hub: {filename!r} would escape the "
+            f"cache directory; refusing to download it")
     lac_path = os.path.splitext(gguf_path)[0] + ".lac"
     return gguf_path, lac_path
 
@@ -121,10 +138,28 @@ def download(url: str, dest: str, progress=None, opener=None,
     try:
         resp = opener(req)
     except urllib.error.HTTPError as e:
-        # 416 = range unsatisfiable (file already complete); treat as done.
         if e.code == 416:
-            return dest
-        raise PullError(f"download failed (HTTP {e.code}): {url}") from e
+            # Range unsatisfiable. Genuinely complete only if the server's
+            # total (Content-Range: bytes */TOTAL) equals what we hold; a
+            # LONGER local file is stale garbage from an older/different
+            # download and must restart, not be trusted as "complete".
+            total_hdr = ""
+            if e.headers is not None:
+                total_hdr = e.headers.get("Content-Range", "") or ""
+            m = re.search(r"/(\d+)\s*$", total_hdr)
+            if m is None or int(m.group(1)) == have:
+                return dest
+            os.remove(dest)
+            have = 0
+            try:
+                resp = opener(urllib.request.Request(url))
+            except urllib.error.HTTPError as e2:
+                raise PullError(f"download failed (HTTP {e2.code}): {url}") from e2
+            except urllib.error.URLError as e2:
+                raise PullError(
+                    f"network error downloading {url}: {e2.reason}") from e2
+        else:
+            raise PullError(f"download failed (HTTP {e.code}): {url}") from e
     except urllib.error.URLError as e:
         raise PullError(f"network error downloading {url}: {e.reason}") from e
     with resp:

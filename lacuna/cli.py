@@ -55,15 +55,37 @@ def _resolve_model(model: str) -> str:
 
 def _cmd_run(a) -> int:
     from .engine import Engine
+    from .pull import PullError
 
+    if a.max_tokens < 1:
+        print("error: --max-tokens must be at least 1; "
+              "omit it to use the default (64).", flush=True)
+        return 2
     hw = detect_hardware()
     print(f"lacuna v{__import__('lacuna').__version__} | {hw.summary()}", flush=True)
-    model = _resolve_model(a.model)
-    eng = Engine(model, hardware=hw, exact=a.exact)
-    print(f"mode: {eng.mode} | exact: {eng.exact} | precision: {eng.precision_policy}", flush=True)
-    prompt = a.prompt or sys.stdin.read().strip() or "Hello"
-    print(eng.generate(prompt, max_tokens=a.max_tokens), flush=True)
-    eng.close()
+    try:
+        model = _resolve_model(a.model)
+    except PullError as e:
+        print(f"error: {e}", flush=True)
+        return 1
+    if model != "mock" and model.endswith((".gguf", ".lac")) \
+            and not os.path.exists(model):
+        print(f"error: model file not found: {model}\n"
+              "  check the path, or fetch a model with: lacuna pull <hf-id>",
+              flush=True)
+        return 2
+    try:
+        eng = Engine(model, hardware=hw, exact=a.exact)
+        print(f"mode: {eng.mode} | exact: {eng.exact} | precision: {eng.precision_policy}", flush=True)
+        prompt = a.prompt or sys.stdin.read().strip() or "Hello"
+        print(eng.generate(prompt, max_tokens=a.max_tokens), flush=True)
+        eng.close()
+    except (ValueError, OSError) as e:
+        # corrupt model file, unreadable store, ...: one sentence, no trace
+        print(f"error: could not run '{model}': {e}\n"
+              "  if the file is a partial download, delete it and pull again.",
+              flush=True)
+        return 1
     return 0
 
 
@@ -71,19 +93,25 @@ def _cmd_serve(a) -> int:
     from .engine import Engine
 
     eng = Engine(a.model)
-    if a.ollama:
-        from .ollama_shim import serve_ollama
+    try:
+        if a.ollama:
+            from .ollama_shim import serve_ollama
 
-        print(f"serving Ollama-compatible API on :{a.port} (mode={eng.mode})",
-              flush=True)
-        print("point any Ollama client at "
-              f"http://{a.host}:{a.port}", flush=True)
-        serve_ollama(eng, host=a.host, port=a.port)
-    else:
-        from .server import serve
+            print(f"serving Ollama-compatible API on :{a.port} (mode={eng.mode})",
+                  flush=True)
+            print("point any Ollama client at "
+                  f"http://{a.host}:{a.port}", flush=True)
+            serve_ollama(eng, host=a.host, port=a.port)
+        else:
+            from .server import serve
 
-        print(f"serving OpenAI-compatible API on :{a.port} (mode={eng.mode})", flush=True)
-        serve(eng, host=a.host, port=a.port)
+            print(f"serving OpenAI-compatible API on :{a.port} (mode={eng.mode})", flush=True)
+            serve(eng, host=a.host, port=a.port)
+    except OSError as e:
+        print(f"error: cannot listen on {a.host}:{a.port}: {e.strerror or e}\n"
+              "  is another server already running there? "
+              "pick a free port with --port.", flush=True)
+        return 1
     return 0
 
 

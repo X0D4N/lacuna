@@ -137,6 +137,16 @@ from lacuna import Engine
 print(Engine("model.lac").generate("hello"))
 ```
 
+Repeat runs start warm: the hot-set is persisted between runs
+(checksum-validated; a stale cache just means a cold start), so the first
+token doesn't re-pay the paging discovery cost.
+
+**Runnable examples** (offline, mock backend): [`examples/python_api.py`](examples/python_api.py)
+(API + auto-tune + warm start) and [`examples/agent_mcp_client.py`](examples/agent_mcp_client.py)
+(driving the MCP server over stdio, the way agent frameworks integrate).
+Security model — local-first, no telemetry, localhost-only by default:
+[`SECURITY.md`](SECURITY.md).
+
 ## Architecture
 
 ```
