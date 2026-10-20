@@ -78,6 +78,32 @@ Rules for every run:
       HONEST speedups only (no 100x tok/s claims — physics). Prototype on branch
       `ease-of-use`, full pytest green before merge. Plus: README/docs final pass,
       CHANGELOG.md, verify sdist builds, review install scripts.
+      ROUND 2 (Fahad's directive 2026-10-20: "100x even better, even optimised" +
+      "Anthropic-built level") — DONE 2026-10-20 on master:
+      (1) Optimization sweep round 2, all measured A/B + bit-identical:
+      pack_q2 8.5x (midpoint fast path + exact-argmin fixup band; exhaustive
+      ±200k-ULP sweep pinned in tests), pack_ternary 10.9x, unpack_ternary
+      5.5x (LUT); pager exact-length reads — RAW pages 30.8x, full 2MiB
+      pages 1.06x, small pages neutral; scheduler oracle calls/step 3->1
+      (non-exact 600->200 per 200 steps, exact 400->200); buffer arena
+      copy primitive 3.7x; checksum A/B: crc32 3.19 GB/s chosen.
+      (2) Warm-start persistent hot-set cache (Day-7 item pulled forward):
+      lacuna/warmstart.py — fingerprint-gated, per-page CRC32 re-validated,
+      corrupt/stale cache degrades to cold start, never wrong data;
+      Engine restores on open / saves on close. 12 tests.
+      (3) Test expansion 111 -> 177: +codec identity, +fault injection,
+      +hardening, +fuzz suites (all real assertions, no filler).
+      (4) Production hardening: shared http_util (1MiB body cap, max_tokens
+      clamp 4096, typed-field validation, clean JSON errors — no stack
+      traces to clients); MCP errors are one clean line (tracebacks to
+      stderr only) + line cap + JSON-RPC parse/invalid errors; pull
+      path-traversal guard + stale-prefix 416 restart; CLI failures are
+      one sentence + next step with proper exit codes; fuzz found and
+      fixed an OverflowError path in the pager (file-size bounds now
+      enforced as ValueError); SECURITY.md + examples/ (python API +
+      MCP agent client, both verified runnable verbatim); pyflakes clean
+      in all touched files (one pre-existing unused import remains in
+      untouched lacuna/prefetch.py). Full suite 177/177 green.
 - [ ] Day 7 — Fri Oct 23: RELEASE PREP + ZERO-SILENT-ERROR HARDENING (Fahad's directive
       2026-10-19: "zero latency lag, faster response... with zero error or mistakes").
       Honest standard: not literal zero latency (physics) but *feels instant* — first

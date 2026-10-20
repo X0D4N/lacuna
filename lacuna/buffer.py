@@ -249,7 +249,6 @@ class PagerBackedBuffer:
                 f"tensor {tensor.name!r}: pages {sorted(unknown)} not in tensor"
             )
         faults = 0
-        cols = tensor.shape[1]
         for pid, rs, re in tensor.pages:
             if pid not in wanted:
                 continue

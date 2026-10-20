@@ -110,7 +110,6 @@ class LacWriter:
 
         if precision == _q.RAW:
             payload = np.ascontiguousarray(arr).view(np.uint8)
-            packed_all, scale, _ = payload, np.float32(1.0), arr.shape
             per_row = payload.nbytes // max(rows, 1)
             pack_fn = None
         else:
@@ -189,6 +188,7 @@ class PagedWeightStore:
         self.path = path
         self.hot_budget = int(hot_budget_bytes)
         self._fd = os.open(path, os.O_RDONLY)
+        self._file_size = os.fstat(self._fd).st_size
         with open(path, "rb") as f:
             magic, ver = struct.unpack("<4sH", f.read(6))
             if magic != MAGIC:
@@ -295,6 +295,15 @@ class PagedWeightStore:
         corruption and fails loud here, never silently decodes short.
         """
         e = self._entries[idx]
+        # Bounds invariants a valid page always satisfies; a corrupted
+        # table entry (offset near 2**64, absurd declared payload) trips
+        # these and fails loud as ValueError instead of OverflowError
+        # from deep inside os.pread.
+        if not 0 <= e["offset"] < self._file_size:
+            raise ValueError(
+                f"page {idx}: offset {e['offset']} outside {self.path} "
+                f"({self._file_size} bytes)"
+            )
         hdr = self._read_at(e["offset"], PAGE_HDR_SIZE)
         if len(hdr) < PAGE_HDR_SIZE:
             raise ValueError(
@@ -302,7 +311,17 @@ class PagedWeightStore:
                 f"({len(hdr)} of {PAGE_HDR_SIZE} bytes)"
             )
         prec, rows, cols, _scale = struct.unpack(PAGE_HDR_FMT, hdr)
+        if prec != e["precision"]:
+            raise ValueError(
+                f"page {idx}: header/table precision mismatch in {self.path} "
+                f"(header {prec}, table {e['precision']})"
+            )
         n = self._payload_len(prec, rows, cols)
+        if n > self._file_size:
+            raise ValueError(
+                f"page {idx}: declared payload {n} bytes exceeds the "
+                f"store file size {self._file_size} in {self.path}"
+            )
         payload = self._read_at(e["offset"] + PAGE_HDR_SIZE, n) if n else b""
         if len(payload) < n:
             raise ValueError(
