@@ -141,10 +141,25 @@ class OverlapScheduler:
         results = []
         pending: dict[int, object] = {}
 
-        def _fetch(step):
+        # Run-local page-list cache: the oracle is consulted ONCE per step.
+        # Previously pages_for_step ran up to 3x per step (fetch thread, an
+        # unused `required` materialization in non-exact mode, the miss
+        # check). Lists are computed on the calling thread before submit, so
+        # pool workers only read them. When no separate required-pages fn is
+        # given, the exact-mode guarantee now covers exactly the prefetched
+        # list — the same set, not a second oracle sample.
+        page_cache: dict[int, list] = {}
+
+        def _pages(step: int) -> list:
+            v = page_cache.get(step)
+            if v is None:
+                v = page_cache[step] = list(pages_for_step(step))
+            return v
+
+        def _fetch(ids):
             t0 = time.perf_counter()
             try:
-                fetch_fn(pages_for_step(step))
+                fetch_fn(ids)
             finally:
                 with self._lock:
                     self.stats["total_fetch_s"] += time.perf_counter() - t0
@@ -152,7 +167,7 @@ class OverlapScheduler:
 
         # prime the pipeline: prefetch steps 0..K-1 up front
         for s in range(min(self.k, n_steps)):
-            pending[s] = self._pool.submit(_fetch, s)
+            pending[s] = self._pool.submit(_fetch, _pages(s))
 
         # Per-step stats accumulate in locals and flush once at the end: the
         # worker-thread _fetch updates above keep their own locking, and every
@@ -168,11 +183,15 @@ class OverlapScheduler:
             # schedule prefetch for the step falling off the lookahead edge
             edge = step + self.k
             if edge < n_steps:
-                pending[edge] = self._pool.submit(_fetch, edge)
+                pending[edge] = self._pool.submit(_fetch, _pages(edge))
 
-            required = list(req_fn(step))
             if exact:
                 # Guarantee point: full required set resident BEFORE compute.
+                required = (
+                    _pages(step)
+                    if required_pages_for_step is None
+                    else list(req_fn(step))
+                )
                 faults = ensure_fn(required)
                 exact_faults += faults
                 if is_resident is not None and not all(
@@ -182,7 +201,7 @@ class OverlapScheduler:
             else:
                 # oracle-miss check before compute
                 if is_resident is not None:
-                    for pid in pages_for_step(step):
+                    for pid in _pages(step):
                         if not is_resident(pid):
                             misses += 1
                             fetch_fn([pid])  # on-demand fault (counted)
