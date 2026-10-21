@@ -85,9 +85,35 @@ production `extreme` mix (Q4 attn/norm/embed + Q2 FFN) costs +7.15 ppl on
 this tiny model at 3.14 bits/param; forcing the ternary cold tier on costs
 +35.41. These are codec stress-test deltas, not LLM quality numbers.
 
+## Measured hot-path optimizations (MEASURED, dev box)
+
+2026-10-20, optimization sweep round 2. All A/B timings measured on the dev
+box (7 GB RAM Linux VM, Python layer only); every speedup is **bit-identical
+in output** — pinned by exhaustive tests (e.g. the pack_q2 ±200k-ULP sweep).
+These are per-op wins; real inference time stays I/O-dominated by design, so
+none of these claims multi-x tok/s.
+
+| Hot path | Before | After | Speedup |
+|---|---|---|---|
+| pack_q2 (midpoint fast path + exact-argmin fixup band) | baseline | — | 8.5x |
+| pack_ternary | baseline | — | 10.9x |
+| unpack_ternary (LUT decode) | baseline | — | 5.5x |
+| pager exact-length reads, RAW pages | baseline | — | 30.8x |
+| pager exact-length reads, full 2MiB pages | baseline | — | 1.06x (neutral) |
+| pager exact-length reads, small pages | baseline | — | neutral |
+| scheduler oracle calls/step (non-exact, per 200 steps) | 600 | 200 | 3x |
+| scheduler oracle calls/step (exact, per 200 steps) | 400 | 200 | 2x |
+| buffer arena copy primitive | baseline | — | 3.7x |
+| page checksum (crc32 chosen over alternatives) | — | 3.19 GB/s | — |
+
+Reading: the RAW-page read path (30.8x) and ternary codec (10.9x pack /
+5.5x unpack) were the worst Python-layer offenders; the scheduler now makes
+1 oracle call per step instead of 3. Small pages and full 2MiB pages were
+already at the I/O floor — reported as neutral, not dropped.
+
 ## Measured (tests/)
 
-- `pytest tests/` — **111 passed** (2026-10-20): pager roundtrip + budget enforcement, oracle
+- `pytest tests/` — **177 passed** (2026-10-21): pager roundtrip + budget enforcement, oracle
   recall ≥ 0.85 at the recall-first operating point, quant error ordering
   (Q4 < Q2 < ternary, all finite), scheduler overlap speedup > 1, converter
   roundtrip of a synthetic GGUF, one-line Engine API, HTTP endpoints, MCP
@@ -99,7 +125,11 @@ this tiny model at 3.14 bits/param; forcing the ternary cold tier on costs
   sweep (behavior-preserving), ease-of-use (pull/Ollama shim/auto-tune),
   simulator sweeps (11: parity with scenario_c, sparsity/K/bandwidth
   monotonicity, trillion specs reproduce docs/TARGET_MODELS.md, all cold
-  verdicts DESKTOP-only).
+  verdicts DESKTOP-only), warm-start hot-set cache (12: fingerprint-gated,
+  per-page CRC32 re-validated, corrupt/stale degrades to cold start),
+  production hardening (pull path-traversal guard, stale-prefix 416 restart,
+  typed HTTP/MCP/CLI errors), fault-injection + fuzz suites (pager
+  OverflowError fixed — file-size bounds enforced as ValueError).
 
 ## To measure on real hardware
 

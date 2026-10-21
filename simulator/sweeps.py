@@ -21,7 +21,6 @@ CLI: ``python -m simulator.sweeps`` prints markdown tables.
 
 from __future__ import annotations
 
-import math
 import sys
 
 from simulator.simulate import EFFECTIVE_TFLOPS, NVME_BW_GBS, TAIL_FACTOR, _tok_s

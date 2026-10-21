@@ -191,7 +191,10 @@ documented gap in [`docs/PRIOR_ART.md`](docs/PRIOR_ART.md).
   syntax-checked, real-tree compile pending a GPU box
   ([design](integrations/llama.cpp/INTEGRATION.md))
 - [x] Oracle training recipes per model family (Qwen, Llama, MoE) — [`docs/ORACLE_RECIPES.md`](docs/ORACLE_RECIPES.md), `lacuna oracle-recipe`
-- [ ] Perplexity evals: quality cost of the Q2/ternary cold tiers
+- [x] Perplexity evals: quality cost of the Q2/ternary cold tiers — DONE 2026-10-18 at
+  tiny-model scale (`benchmarks/perplexity.md`): exact == dense bit-identical;
+  extreme Q4/Q2 +7.15 ppl at 3.14 bits/param; ternary stress +35.41.
+  Full-scale real-LLM eval still needs a GPU box.
 - [ ] Windows NVMe: measured prefetch throughput tuning
 
 ## Contributing
