@@ -66,18 +66,17 @@ Rules for every run:
       BLOCKED: (a) shadow-mode scoring on REAL weights — prototype measured
       16x over random on synthetic patterns only; needs a GPU box with a
       real MoE GGUF + llama.cpp (not available on this box).
-- [ ] Day 6 — Thu Oct 22: EASE OF USE (Fahad's directive 2026-10-19: "make it 100x
-      better, faster, easier to use for anyone, with models and agents out there").
-      (a) `lacuna pull <hf-id>` / `lacuna run <hf-id>`: one command from zero to chat —
-      HuggingFace download (stdlib urllib, no new deps) + auto-convert to .lac + run.
-      (b) Ollama-compatible API shim: speak Ollama's /api/generate, /api/chat, /api/tags
-      (incl. streaming NDJSON) so every existing agent/tool built for Ollama works with
-      Lacuna unchanged — biggest ecosystem unlock. (c) Hardware auto-tune: detect
-      RAM/VRAM/disk and pick caps, page size, K automatically — zero config for anyone.
-      (d) Speed: wire 9/10 prefetch + tree speculation as the default path; document
-      HONEST speedups only (no 100x tok/s claims — physics). Prototype on branch
-      `ease-of-use`, full pytest green before merge. Plus: README/docs final pass,
-      CHANGELOG.md, verify sdist builds, review install scripts.
+- [x] Day 6 — Thu Oct 22: EASE OF USE. DONE 2026-10-21 (a day early, commits
+      969395a + d9c27a1): (a)(b)(c) verified merged — `lacuna pull/run <hf-id>`,
+      Ollama shim (/api/generate, /api/chat, /api/tags + NDJSON streaming),
+      hardware auto-tune; (d) prefetch + tree speculation confirmed as the
+      Engine default path; NEW this run: CHANGELOG.md, MANIFEST.in, sdist
+      verified (builds + installs cleanly in isolation, API + `lacuna simulate`
+      smoke-tested), benchmarks/RESULTS.md measured hot-path table + 111→177
+      test inventory, README roadmap final pass, pyflakes clean, stale merged
+      branches deleted, .serena/logs gitignored. Full suite 177/177 green.
+      (Fahad's directive 2026-10-19: "make it 100x better, faster, easier to
+      use for anyone, with models and agents out there").
       ROUND 2 (Fahad's directive 2026-10-20: "100x even better, even optimised" +
       "Anthropic-built level") — DONE 2026-10-20 on master:
       (1) Optimization sweep round 2, all measured A/B + bit-identical:
