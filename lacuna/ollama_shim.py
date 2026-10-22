@@ -41,6 +41,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Protocol, runtime_checkable
 
 from .http_util import (
+    JsonErrors,
+    LacunaHTTPServer,
     RequestError,
     chat_prompt,
     clamp_max_tokens,
@@ -85,7 +87,7 @@ def scan_cache_models(cache_dir: str) -> list[str]:
     return names
 
 
-class _OllamaHandler(BaseHTTPRequestHandler):
+class _OllamaHandler(JsonErrors, BaseHTTPRequestHandler):
     backend: InferenceBackend = None  # set by serve_ollama()
     registry: dict = {}               # model name -> InferenceBackend
     default_model: str = "lacuna"
@@ -204,7 +206,7 @@ def build_ollama_server(backend: InferenceBackend | None = None,
                         host: str = "127.0.0.1", port: int = 11434,
                         model_name: str = "lacuna",
                         cache_dir: str | None = None,
-                        extra_models: dict | None = None) -> ThreadingHTTPServer:
+                        extra_models: dict | None = None) -> LacunaHTTPServer:
     """Build (but do not start) the Ollama-compatible server.
 
     Useful for embedding and for tests (bind ``port=0`` to pick a free port,
@@ -225,7 +227,7 @@ def build_ollama_server(backend: InferenceBackend | None = None,
     _OllamaHandler.backend = be
     _OllamaHandler.registry = registry
     _OllamaHandler.default_model = model_name
-    return ThreadingHTTPServer((host, port), _OllamaHandler)
+    return LacunaHTTPServer((host, port), _OllamaHandler)
 
 
 def serve_ollama(backend: InferenceBackend | None = None,

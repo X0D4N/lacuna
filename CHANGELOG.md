@@ -6,8 +6,20 @@ everywhere it appears.
 
 ## [Unreleased]
 
-Hardening week (Oct 17–21, 2026); release targeted Sat Oct 24, 2026.
-Full suite 177/177 green.
+Hardening week (Oct 17–23, 2026); release Fri Oct 23, 2026 (moved up by
+Fahad for the public showcase).
+
+### Round 3 — showcase optimization + hardening (2026-10-22)
+- pack_q2 float32 fast path (provably exact — see `lacuna/quant.py`):
+  1.8x, bit-identical, pinned against a float64 reference on adversarial
+  midpoint-clustered inputs. unpack_q4 stacked-nibble interleave: 1.6x,
+  bit-identical. (MEASURED, dev box; `benchmarks/RESULTS.md`.)
+- Server, load-verified (240 requests @ 32 concurrent clients, 240/240;
+  12-payload chaos suite clean): listen backlog 5 → 128 (stdlib default
+  reset connections under burst), unsupported methods → clean JSON 405,
+  framework errors → JSON instead of HTML, oversized bodies drained
+  before the 413 reply (no more broken pipes), `content: null` no longer
+  becomes the literal prompt `"None"`.
 
 ### Added
 - `lacuna pull <hf-id>` / `lacuna run <hf-id>`: one command from zero to

@@ -24,6 +24,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING
 
 from .http_util import (
+    JsonErrors,
+    LacunaHTTPServer,
     RequestError,
     chat_prompt,
     clamp_max_tokens,
@@ -39,7 +41,7 @@ def _now() -> int:
     return int(time.time())
 
 
-class _Handler(BaseHTTPRequestHandler):
+class _Handler(JsonErrors, BaseHTTPRequestHandler):
     engine = None  # set by serve()
     model_id = "lacuna-mock"
 
@@ -172,7 +174,7 @@ def serve(engine: "InferenceBackend", host: str = "127.0.0.1", port: int = 8080,
     """
     _Handler.engine = engine
     _Handler.model_id = model_id
-    srv = ThreadingHTTPServer((host, port), _Handler)
+    srv = LacunaHTTPServer((host, port), _Handler)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

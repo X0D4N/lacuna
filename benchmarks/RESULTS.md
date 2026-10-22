@@ -111,6 +111,32 @@ Reading: the RAW-page read path (30.8x) and ternary codec (10.9x pack /
 1 oracle call per step instead of 3. Small pages and full 2MiB pages were
 already at the I/O floor — reported as neutral, not dropped.
 
+## Round 3 — showcase hardening (MEASURED, dev box, 2026-10-22)
+
+Ordered by Fahad for the public release (Fri Oct 23): 1000s of users, no
+delay, no errors. Same rules: interleaved A/B medians on this box, every
+speedup bit-identical (pinned by `tests/test_round3_showcase.py` plus the
+existing ±200k-ULP sweep).
+
+| Hot path | Before | After | Speedup |
+|---|---|---|---|
+| pack_q2 (float32 compares — exact, see quant.py note) | 15.0 ms / 1M | 8.2 ms / 1M | 1.8x |
+| unpack_q4 (stacked-nibble interleave) | 5.39 ms / 1M | 3.41 ms / 1M | 1.6x |
+| OpenAI server, 240 requests @ 32 concurrent clients | 234/240 ok, 101 req/s | 240/240 ok, ~150 req/s | resets eliminated |
+
+Server fixes behind the load row: listen backlog 5 → 128 (the stdlib
+default was resetting connections under burst), framework errors (501
+HTML pages) replaced with clean JSON + 405 for unsupported methods,
+oversized bodies drained before the 413 reply (clients no longer see a
+broken pipe), and `chat_prompt` no longer flattens `content: null` into
+the literal prompt text `"None"`. Chaos suite: 12 malformed/abusive
+payloads, zero dropped connections, zero 5xx, zero stack traces.
+
+Rejected after measurement (kept out, honestly): a LUT/broadcast decode
+for the 2-bit codecs (slower than the round-2 strided version) and
+parallel cold-fault page loading (no gain on this 2-core box — decode is
+bandwidth-bound here; not shipped on a guess).
+
 ## Measured (tests/)
 
 - `pytest tests/` — **177 passed** (2026-10-21): pager roundtrip + budget enforcement, oracle
