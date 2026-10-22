@@ -32,7 +32,7 @@ import sys
 import traceback
 
 _PROTOCOL_VERSION = "2024-11-05"
-_SERVER_INFO = {"name": "lacuna", "version": "0.1.0"}
+_SERVER_INFO = {"name": "lacuna", "version": "0.3.0"}
 # One JSON-RPC message per line; a line past this cap is rejected, never
 # buffered unboundedly or parsed.
 MAX_LINE_BYTES = 10 * 1024 * 1024
@@ -54,7 +54,7 @@ def _tools():
     return [
         {
             "name": "lacuna_generate",
-            "description": "Generate text with the Lacuna engine (mock target in v0.1.0).",
+            "description": "Generate text with the Lacuna engine (mock target in v0.3.0).",
             "inputSchema": {
                 "type": "object",
                 "properties": {

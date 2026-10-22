@@ -4,10 +4,12 @@ All notable changes to Lacuna. Numbers are honest: MEASURED = this repo's
 tests/benchmarks on the dev box; SIMULATED = `simulator/` output, labeled
 everywhere it appears.
 
-## [Unreleased]
+## [0.3.0] — 2026-10-23 (showcase release; hardening week Oct 17–23, 2026)
 
-Hardening week (Oct 17–23, 2026); release Fri Oct 23, 2026 (moved up by
-Fahad for the public showcase).
+Release prep final gate (2026-10-22): full review pass, CI trigger fixed to
+the real `master` branch, sdist builds + installs cleanly in isolation,
+README/install scripts reviewed, zero TODOs, no macOS paths, mock backend
+explicitly labeled everywhere it appears. Full suite 192/192 green.
 
 ### Round 3 — showcase optimization + hardening (2026-10-22)
 - pack_q2 float32 fast path (provably exact — see `lacuna/quant.py`):

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lacuna-llm"
-version = "0.2.0"
+version = "0.3.0"
 description = "Lookahead sparse-paged LLM inference: 100B-class models on 8 GB RAM + <4 GB VRAM"
 readme = "README.md"
 requires-python = ">=3.10"

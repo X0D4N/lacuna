@@ -12,7 +12,7 @@ One-line API::
 Stdlib + numpy only.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .buffer import BufferCapacityError, BufferError, PagerBackedBuffer, tiled_exact_matvec
 from .engine import Engine, LacunaEngine
