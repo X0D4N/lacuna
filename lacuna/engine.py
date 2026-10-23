@@ -46,9 +46,12 @@ What is an INTEGRATION POINT (not implemented on this box)
      there is no GPU and no libllama build, so the loader returns ``None`` and
      the engine runs the mock target. Nothing is faked: the mock path is
      clearly labeled in every output.
-  2. **llama-server dense baseline** (``run_llama_server``): shells out to a
-     real ``llama-server`` binary for the dense (non-sparse) baseline path.
-     Requires the binary on PATH; raises a clear error otherwise.
+  2. **llama-server dense path** (``run_llama_server`` +
+     ``LlamaServerBackend``): IMPLEMENTED. When a ``llama-server`` binary
+     is available, ``Engine("model.gguf")`` serves the real model through
+     it (greedy decoding) and reports mode ``"libllama-dense"``. This is
+     dense inference inside the llama.cpp process — it does NOT route
+     through Lacuna's pager — and it is labeled as such everywhere.
 
 See integrations/llama.cpp/INTEGRATION.md for the ggml backend hook design.
 """
@@ -57,9 +60,14 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import json
 import os
 import shutil
+import socket
 import subprocess
+import time
+import urllib.error
+import urllib.request
 
 from . import quant as _q
 from .hardware import HardwareTier, detect_hardware
@@ -122,11 +130,19 @@ def _try_load_libllama(path: str | None = None):
     return None
 
 
-def run_llama_server(model_path: str, port: int = 8080, extra_args=()) -> subprocess.Popen:
+def run_llama_server(
+    model_path: str,
+    port: int = 8080,
+    extra_args=(),
+    capture_output: bool = False,
+) -> subprocess.Popen:
     """Dense baseline path: shell out to a real ``llama-server`` binary.
 
     Raises RuntimeError when the binary is not on PATH. This is the honest
     dense baseline that Lacuna's sparse numbers are compared against.
+    ``capture_output=True`` silences the server's own console logging
+    (used by LlamaServerBackend, where the server is an implementation
+    detail and its log spam would bury the caller's output).
     """
     binary = shutil.which("llama-server")
     if binary is None:
@@ -134,7 +150,162 @@ def run_llama_server(model_path: str, port: int = 8080, extra_args=()) -> subpro
             "llama-server not found on PATH — install llama.cpp to use the dense baseline"
         )
     cmd = [binary, "-m", model_path, "--port", str(port), *extra_args]
+    if capture_output:
+        return subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
     return subprocess.Popen(cmd)
+
+
+def _find_llama_server(explicit: str | None = None) -> str | None:
+    """Locate a ``llama-server`` binary, or return None.
+
+    Search order: the explicit path, ``$LACUNA_LLAMA_SERVER``, then PATH.
+    A candidate only counts if it is an executable file, so a stale env var
+    degrades to "not found" instead of a confusing spawn failure later.
+    """
+    candidates = [explicit, os.environ.get("LACUNA_LLAMA_SERVER")]
+    candidates.append(shutil.which("llama-server"))
+    for cand in candidates:
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+class LlamaServerBackend:
+    """Real-inference backend: drives a local llama.cpp ``llama-server``.
+
+    Satisfies the :class:`~lacuna.ollama_shim.InferenceBackend` protocol
+    (``generate`` + ``mode``). The server is started lazily-never: it is
+    spawned by the constructor via :func:`run_llama_server` and the
+    constructor blocks until the server answers ``/health`` (or raises).
+
+    HONEST SCOPE: this is llama.cpp *dense* inference over HTTP. It does
+    NOT route through Lacuna's pager — the weights live inside the
+    llama-server process — so ``mode`` is ``"libllama-dense"``, never
+    ``"lacuna"``. It exists so Lacuna's public API, CLI and servers can
+    produce real model output today, through the documented engine-swap
+    seam, while the paged executor is built.
+
+    Decoding is pinned greedy (temperature 0, top_k 1) so output is
+    reproducible and directly comparable to ``llama-cli --temp 0
+    --top-k 1`` on the same prompt string.
+    """
+
+    def __init__(
+        self,
+        model_path: str,
+        server_binary: str | None = None,
+        port: int | None = None,
+        startup_timeout: float = 180.0,
+    ):
+        binary = _find_llama_server(server_binary)
+        if binary is None:
+            raise RuntimeError(
+                "llama-server not found — build llama.cpp and put llama-server "
+                "on PATH or set LACUNA_LLAMA_SERVER to the binary"
+            )
+        self.model_path = model_path
+        self.server_binary = binary
+        self.port = port if port is not None else _free_port()
+        self.last_timings: dict | None = None
+        self._closed = False
+        # run_llama_server() resolves the binary via PATH; make sure the
+        # directory of the binary we actually found is on it.
+        bindir = os.path.dirname(os.path.abspath(binary))
+        path_entries = os.environ.get("PATH", "").split(os.pathsep)
+        if bindir not in path_entries:
+            os.environ["PATH"] = bindir + os.pathsep + os.environ.get("PATH", "")
+        self._proc = run_llama_server(
+            model_path, port=self.port, capture_output=True
+        )
+        try:
+            self._wait_ready(startup_timeout)
+        except Exception:
+            self.close()
+            raise
+
+    # -- lifecycle -------------------------------------------------
+    def _wait_ready(self, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        url = f"http://127.0.0.1:{self.port}/health"
+        while time.monotonic() < deadline:
+            if self._proc.poll() is not None:
+                raise RuntimeError(
+                    f"llama-server exited early (code {self._proc.returncode}) "
+                    f"while loading {self.model_path}"
+                )
+            try:
+                with urllib.request.urlopen(url, timeout=2) as resp:
+                    if resp.status == 200:
+                        return
+            except (urllib.error.URLError, OSError):
+                pass
+            time.sleep(0.25)
+        raise RuntimeError(
+            f"llama-server did not become ready within {timeout:.0f}s"
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        proc = getattr(self, "_proc", None)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=10)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    # -- InferenceBackend protocol ----------------------------------
+    @property
+    def mode(self) -> str:
+        return "libllama-dense"
+
+    def generate(self, prompt: str, max_tokens: int = 32) -> str:
+        """Greedy-generate from the real model served by llama-server.
+
+        The prompt is sent verbatim to the server's ``/completion``
+        endpoint (no chat template is applied by this backend — the
+        string the caller passes is the string the model sees).
+        """
+        if self._closed:
+            raise RuntimeError("LlamaServerBackend is closed")
+        payload = {
+            "prompt": prompt,
+            "n_predict": int(max_tokens),
+            "temperature": 0.0,
+            "top_k": 1,
+            "top_p": 1.0,
+            "seed": 42,
+            "cache_prompt": False,
+            "stream": False,
+        }
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/completion",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            body = json.loads(resp.read().decode())
+        self.last_timings = body.get("timings")
+        return body["content"]
 
 
 class LacunaEngine:
@@ -249,9 +420,15 @@ class Engine:
         from lacuna import Engine
         print(Engine("model.lac").generate("hello"))
 
-    ``model_path`` may be a ``.lac`` file, a ``.gguf`` file (auto-converted,
-    cached next to the source), or anything else / missing, in which case the
-    engine runs in clearly-labeled MOCK mode for plumbing tests.
+    ``model_path`` may be a ``.lac`` file, a ``.gguf`` file, or anything
+    else / missing, in which case the engine runs in clearly-labeled MOCK
+    mode for plumbing tests. A ``.gguf`` file generates REAL model output
+    when a ``llama-server`` binary is available (on PATH, via
+    ``$LACUNA_LLAMA_SERVER``, or via the ``llama_server=`` argument):
+    generation is then llama.cpp dense inference through
+    :class:`LlamaServerBackend` and ``mode`` reads ``"libllama-dense"``.
+    Without a binary, the ``.gguf`` is auto-converted to ``.lac`` (cached
+    next to the source) and run through the paged orchestration path.
 
     ``exact=True`` (default): the exactness guarantee — output identical to
     the dense baseline by construction; the oracle only schedules prefetches.
@@ -271,6 +448,7 @@ class Engine:
         exact: bool = True,
         precision_policy: str | None = None,
         warm_start: bool = True,
+        llama_server: str | None = None,
     ):
         self.hw = hardware or detect_hardware()
         self.model_path = model_path
@@ -282,6 +460,7 @@ class Engine:
         _q.validate_policy(self.precision_policy)
         self.mode = "mock"
         self.store: PagedWeightStore | None = None
+        self._backend: LlamaServerBackend | None = None
         self.libllama = _try_load_libllama()
 
         if model_path.endswith(".lac") and os.path.exists(model_path):
@@ -290,21 +469,29 @@ class Engine:
             )
             self.mode = "lacuna"
         elif model_path.endswith(".gguf") and os.path.exists(model_path):
-            spp = model_path + ".lac"
-            if not os.path.exists(spp):
-                from .convert import convert as _convert
-
-                _convert(
-                    model_path,
-                    spp,
-                    page_mb=self.hw.page_mb,
-                    quiet=True,
-                    precision_policy=self.precision_policy,
+            binary = _find_llama_server(llama_server)
+            if binary is not None:
+                # Real inference: the actual model, served by llama.cpp.
+                self._backend = LlamaServerBackend(
+                    model_path, server_binary=binary
                 )
-            self.store = PagedWeightStore(
-                spp, hot_budget_bytes=int(self.hw.ram_hot_budget_gb * 1024**3)
-            )
-            self.mode = "lacuna"
+                self.mode = self._backend.mode
+            else:
+                spp = model_path + ".lac"
+                if not os.path.exists(spp):
+                    from .convert import convert as _convert
+
+                    _convert(
+                        model_path,
+                        spp,
+                        page_mb=self.hw.page_mb,
+                        quiet=True,
+                        precision_policy=self.precision_policy,
+                    )
+                self.store = PagedWeightStore(
+                    spp, hot_budget_bytes=int(self.hw.ram_hot_budget_gb * 1024**3)
+                )
+                self.mode = "lacuna"
         elif self.libllama is not None:
             self.mode = "libllama-dense"
 
@@ -316,12 +503,17 @@ class Engine:
         self._engine = LacunaEngine(self.hw, store=self.store, exact=self.exact)
 
     def generate(self, prompt: str, max_tokens: int = 32) -> str:
+        if self._backend is not None:
+            return self._backend.generate(prompt, max_tokens=max_tokens)
         text = self._engine.generate(prompt, max_tokens=max_tokens)
         if self.mode == "mock":
             return f"[mock] {text}"
         return text
 
     def close(self):
+        if self._backend is not None:
+            self._backend.close()
+            self._backend = None
         if self.store is not None:
             if self.warm_start:
                 from .warmstart import default_hotset_path
