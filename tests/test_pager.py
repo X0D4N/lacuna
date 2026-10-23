@@ -54,3 +54,32 @@ def test_prefetch_and_hit_rate(spp_path):
             s.get_page(i)
         assert s.hit_rate == 1.0
         assert s.stats["prefetches"] == s.n_pages
+
+
+def test_add_raw_stream_matches_add_raw_bytes(tmp_path):
+    """Streaming RAW writes must page identically to the one-shot blob API
+    and report the exact byte total (the convert length guard relies on it),
+    for irregular chunk sizes straddling page boundaries."""
+    rng = np.random.default_rng(7)
+    blob = rng.integers(0, 256, size=100_003, dtype=np.uint8).tobytes()
+    chunks, pos = [], 0
+    for n in (1, 4082, 4083, 3, 8166, 5, 20_000, 1):  # page_size-13 = 4083
+        chunks.append(blob[pos:pos + n])
+        pos += n
+    chunks.append(blob[pos:])
+    assert b"".join(chunks) == blob
+
+    p1, p2 = str(tmp_path / "a.lac"), str(tmp_path / "b.lac")
+    with LacWriter(p1, page_size=4096) as w:
+        w.add_raw_bytes("t", blob)
+    with LacWriter(p2, page_size=4096) as w:
+        tid, total = w.add_raw_stream("t", iter(chunks))
+    assert total == len(blob)
+
+    def _reconstruct(p):
+        with PagedWeightStore(p, hot_budget_bytes=10**9) as s:
+            pages = sorted(s.tensor_pages(0), key=lambda d: d["offset"])
+            return b"".join(s.get_page(d["page_id"]).tobytes() for d in pages)
+
+    assert _reconstruct(p1) == blob
+    assert _reconstruct(p2) == blob

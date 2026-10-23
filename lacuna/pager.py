@@ -135,18 +135,46 @@ class LacWriter:
             )
         return tensor_id
 
+    def _write_raw_page(self, tensor_id: int, layer: int, chunk: bytes) -> None:
+        off = self._f.tell()
+        self._f.write(struct.pack(PAGE_HDR_FMT, _q.RAW, 0, len(chunk), 1.0))
+        self._f.write(chunk)
+        self._entries.append((tensor_id, int(layer), 0, 0, _q.RAW, 0, off))
+
     def add_raw_bytes(self, name: str, blob: bytes, layer: int = 0) -> int:
         """Store an opaque byte blob as RAW pages (e.g. pre-quantized GGUF blocks)."""
+        tensor_id, _ = self.add_raw_stream(name, [blob], layer=layer)
+        return tensor_id
+
+    def add_raw_stream(self, name: str, chunks, layer: int = 0) -> tuple[int, int]:
+        """Store an opaque byte stream as RAW pages under ONE tensor id.
+
+        ``chunks`` is an iterable of bytes pieces of any size; they are
+        re-paged at ``page_size`` boundaries exactly as if their
+        concatenation had been passed to :meth:`add_raw_bytes`, without
+        ever holding the whole blob in RAM. Returns
+        ``(tensor_id, total_bytes_written)`` so callers can verify the
+        written length against the source (fail-loud length guard).
+        """
         tensor_id = len(self._names)
         self._names.append(name)
         per_page = self.page_size - PAGE_HDR_SIZE
-        for start in range(0, len(blob), per_page):
-            chunk = blob[start : start + per_page]
-            off = self._f.tell()
-            self._f.write(struct.pack(PAGE_HDR_FMT, _q.RAW, 0, len(chunk), 1.0))
-            self._f.write(chunk)
-            self._entries.append((tensor_id, int(layer), 0, 0, _q.RAW, 0, off))
-        return tensor_id
+        total = 0
+        carry = b""  # leftover (< per_page) bytes from the previous piece
+        for piece in chunks:
+            if not piece:
+                continue
+            if type(piece) is not bytes:
+                piece = bytes(piece)
+            total += len(piece)
+            data = carry + piece if carry else piece
+            nfull = len(data) // per_page * per_page
+            for start in range(0, nfull, per_page):
+                self._write_raw_page(tensor_id, layer, data[start : start + per_page])
+            carry = data[nfull:]
+        if carry:
+            self._write_raw_page(tensor_id, layer, carry)
+        return tensor_id, total
 
     def close(self) -> None:
         table_offset = self._f.tell()

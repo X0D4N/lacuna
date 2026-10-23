@@ -125,7 +125,56 @@ def _opaque_nbytes(info, infos, data_start: int, fsize: int) -> int:
     later = [i["offset"] for i in infos if i["offset"] > off]
     if later:
         nbytes = min(nbytes, min(later) - off)
-    return min(nbytes, 1 << 32)
+    # No size cap here: the span (next tensor's offset, or EOF for the last
+    # tensor) is the true bound. An earlier `min(nbytes, 1 << 32)` silently
+    # truncated larger opaque tensors; reads now fail loud on early EOF
+    # instead (see _pread_full), so a bogus span raises rather than clips.
+    return nbytes
+
+
+# Per-call read size: far below the Linux per-syscall cap (see _pread_full),
+# large enough that syscall overhead is negligible.
+_READ_CHUNK = 1 << 26  # 64 MiB
+
+
+def _pread_full(fd: int, nbytes: int, offset: int) -> bytes:
+    """Read exactly ``nbytes`` at ``offset``, looping over short reads.
+
+    A single ``os.pread`` syscall transfers at most ``MAX_RW_COUNT``
+    (0x7ffff000 = 2,147,479,552) bytes on Linux, so the one-shot pread
+    this replaces silently truncated every tensor larger than that to
+    exactly 0x7ffff000 bytes (measured: a 2,580,480,000-byte GGUF tensor
+    landed in the .lac as 2,147,479,552 bytes). Raises OSError if the
+    file ends early — a short tensor is corruption, never a short write.
+    """
+    parts = []
+    got = 0
+    while got < nbytes:
+        chunk = os.pread(fd, min(nbytes - got, _READ_CHUNK), offset + got)
+        if not chunk:
+            raise OSError(
+                f"short read at offset {offset + got}: wanted {nbytes} "
+                f"bytes, got {got} (source file truncated?)"
+            )
+        parts.append(chunk)
+        got += len(chunk)
+    if len(parts) == 1:
+        return parts[0]
+    return b"".join(parts)
+
+
+def _tensor_chunks(fd: int, nbytes: int, offset: int):
+    """Yield a tensor's bytes in <=64 MiB chunks, exactly ``nbytes`` total.
+
+    Streams through :func:`_pread_full`, so tensors larger than RAM (or
+    larger than the per-syscall read cap) convert without ever being
+    held whole in memory. Raises OSError on early EOF.
+    """
+    done = 0
+    while done < nbytes:
+        step = min(nbytes - done, _READ_CHUNK)
+        yield _pread_full(fd, step, offset + done)
+        done += step
 
 
 def convert(
@@ -161,15 +210,26 @@ def convert(
                 nbytes = _dense_nbytes(info)
                 if nbytes is None:
                     nbytes = _opaque_nbytes(info, infos, data_start, fsize)
-                blob = os.pread(fd, nbytes, data_start + off)
-                w.add_raw_bytes(name, blob, layer=layer)
+                _, written = w.add_raw_stream(
+                    name, _tensor_chunks(fd, nbytes, data_start + off), layer=layer
+                )
+                if written != nbytes:
+                    raise OSError(
+                        f"convert: tensor {name}: wrote {written} of "
+                        f"{nbytes} source bytes"
+                    )
                 stats["tiers"]["raw"] += 1
-                stats["bytes_in"] += len(blob)
+                stats["bytes_in"] += written
                 tier_label = "raw[exact]"
             elif ttype in _DENSE_TYPES:
                 dt, es = _DENSE_TYPES[ttype]
                 nbytes = _dense_nbytes(info)
-                raw = os.pread(fd, nbytes, data_start + off)
+                raw = _pread_full(fd, nbytes, data_start + off)
+                if len(raw) != nbytes:
+                    raise OSError(
+                        f"convert: tensor {name}: read {len(raw)} of "
+                        f"{nbytes} source bytes"
+                    )
                 arr = np.frombuffer(raw, dtype=dt).astype(np.float32)
                 # GGUF stores dims reversed vs row-major expectation; treat as 2-D
                 # (rows = last dim, cols = product of the rest).
@@ -184,10 +244,16 @@ def convert(
             else:
                 # Opaque: carry through as RAW byte pages (no requantization).
                 nbytes = _opaque_nbytes(info, infos, data_start, fsize)
-                blob = os.pread(fd, nbytes, data_start + off)
-                w.add_raw_bytes(name, blob, layer=layer)
+                _, written = w.add_raw_stream(
+                    name, _tensor_chunks(fd, nbytes, data_start + off), layer=layer
+                )
+                if written != nbytes:
+                    raise OSError(
+                        f"convert: tensor {name}: wrote {written} of "
+                        f"{nbytes} source bytes"
+                    )
                 stats["tiers"]["raw"] += 1
-                stats["bytes_in"] += len(blob)
+                stats["bytes_in"] += written
                 tier_label = "raw"
             stats["tensors"] += 1
             log(f"  {name}: {tier_label}")
