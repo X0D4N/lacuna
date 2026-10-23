@@ -26,3 +26,7 @@ Thumbs.db
 *.swp
 # Serena operational logs (health checks regenerate them)
 /.serena/logs/
+
+# Internal tooling / planning
+.serena/
+WEEK_PLAN.md

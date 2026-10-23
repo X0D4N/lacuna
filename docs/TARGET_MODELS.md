@@ -10,7 +10,7 @@ NVMe footprint. All figures vendor-reported unless noted.
 | Qwen3.8-Flash-Next | 180B (125B + 51B n-gram + 4B MTP) | 6B | 512 (10+1) | qwen-community-1.0 | ~185 GB (FP8) | **Best** — 6B active; 51B n-gram table is deterministic lookups, pure function of input text (exact prefetch, zero ML) |
 | DeepSeek V4.1 Flash | 552B (+~196B Engram) | 8B prefill / 16B decode | 384 (top-6) + 1 shared | MIT | ~510 GB | **Great** — tiny active set, best license; needs 500GB+ NVMe |
 
-## Trillion tier — Fahad's target list (2026-10-19: "runnable at any cost")
+## Trillion tier — target list
 
 Honest verdict rule, no exceptions: per-token weight movement =
 active_params × ~0.5 bytes (Q4). At 3.5 GB/s NVMe, anything over ~4 GB/token
@@ -40,10 +40,9 @@ cannot run at usable speed on the FLOOR laptop.
   pessimistic bound. Lacuna's hot-set caching + lookahead prefetch exist
   precisely to beat it: experts recur across tokens, so after warmup the
   steady-state disk reads per word collapse toward the hot working set.
-  **The engineering target (Fahad's directive 2026-10-19, corrected
-  2026-10-20): all 10 runnable on the FLOOR (RTX 2050 + 6GB RAM) — exact
-  output, hard caps respected, system never stressed.** (Not MID — the floor
-  is the min spec for the trillion tier too.) What decides it per model is
+  **The engineering target: all 10 runnable on the FLOOR configuration
+  (RTX 2050 + 6 GB RAM) — exact output, hard caps respected.** The floor is
+  the minimum spec for the trillion tier too. What decides it per model is
   the expert working-set reuse rate on real traces under a 4.5GB hot-set
   budget — measurable with `lacuna/prefetch.py: ShadowScorer`.
   Cold numbers say the floor cannot; the measurement program decides how far

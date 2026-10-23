@@ -45,8 +45,8 @@ fetch-bound regime scales linearly with NVMe bandwidth.
 ### Trillion-tier target list: per-token weight movement (SIMULATED)
 
 Specs from `docs/TARGET_MODELS.md` (sourced there). Cold = active × 0.5
-bytes/token; MID steady state = 95% hot-set residency (Fahad's 2026-10-19
-target — an aspiration for the shadow-scorer to earn, not a claim).
+bytes/token; MID steady state = 95% hot-set residency (a design target
+for the shadow-scorer to earn, not a claim).
 
 | Model | Active/token | Cold GB/token | Cold tok/s | MID steady GB/token | MID steady tok/s | Cold verdict |
 |---|---|---|---|---|---|---|
@@ -85,7 +85,7 @@ production `extreme` mix (Q4 attn/norm/embed + Q2 FFN) costs +7.15 ppl on
 this tiny model at 3.14 bits/param; forcing the ternary cold tier on costs
 +35.41. These are codec stress-test deltas, not LLM quality numbers.
 
-## Measured hot-path optimizations (MEASURED, dev box)
+## Measured hot-path optimizations (MEASURED)
 
 2026-10-20, optimization sweep round 2. All A/B timings measured on the dev
 box (7 GB RAM Linux VM, Python layer only); every speedup is **bit-identical
@@ -111,12 +111,11 @@ Reading: the RAW-page read path (30.8x) and ternary codec (10.9x pack /
 1 oracle call per step instead of 3. Small pages and full 2MiB pages were
 already at the I/O floor — reported as neutral, not dropped.
 
-## Round 3 — showcase hardening (MEASURED, dev box, 2026-10-22)
+## Round 3 — release hardening (MEASURED, 2026-10-22)
 
-Ordered by Fahad for the public release (Fri Oct 23): 1000s of users, no
-delay, no errors. Same rules: interleaved A/B medians on this box, every
-speedup bit-identical (pinned by `tests/test_round3_showcase.py` plus the
-existing ±200k-ULP sweep).
+Prepared for the 0.3.0 public release. Same rules: interleaved A/B
+medians on the development machine, every speedup bit-identical (pinned
+by `tests/test_round3_showcase.py` plus the existing ±200k-ULP sweep).
 
 | Hot path | Before | After | Speedup |
 |---|---|---|---|
@@ -160,7 +159,7 @@ bandwidth-bound here; not shipped on a guess).
 ## To measure on real hardware
 
 Checklist for the first real validation run (needs a 4 GB VRAM box + a 100B
-model — not available on the dev box):
+model — not available on the development machine):
 
 - [ ] Convert a real 100B GGUF → .lac; record size on disk and convert time.
 - [ ] Train oracle predictors on calibration text; record per-layer

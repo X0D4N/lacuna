@@ -1,10 +1,8 @@
 # Ordo — the routing automaton (a supportive technology for Lacuna)
 
-Invented 2026-10-21, from the prior-art sweep in
-[SUPPORT_TECH_RESEARCH.md](SUPPORT_TECH_RESEARCH.md). Status:
-**prototype** — `lacuna/ordo.py` + `simulator/ordo_sim.py`, simulated
-numbers only, real-trace measurement still open (same gate as
-Lacuna's 9/10 program).
+Design background: [SUPPORT_TECH_RESEARCH.md](SUPPORT_TECH_RESEARCH.md).
+Status: **prototype** — `lacuna/ordo.py` + `simulator/ordo_sim.py`;
+simulated numbers only, real-trace measurement still open.
 
 ## The idea in one paragraph
 

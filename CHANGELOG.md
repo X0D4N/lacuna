@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to Lacuna. Numbers are honest: MEASURED = this repo's
-tests/benchmarks on the dev box; SIMULATED = `simulator/` output, labeled
+tests/benchmarks on the development machine; SIMULATED = `simulator/` output, labeled
 everywhere it appears.
 
 ## [0.3.0] — 2026-10-23 (showcase release; hardening week Oct 17–23, 2026)
@@ -15,7 +15,7 @@ explicitly labeled everywhere it appears. Full suite 192/192 green.
 - pack_q2 float32 fast path (provably exact — see `lacuna/quant.py`):
   1.8x, bit-identical, pinned against a float64 reference on adversarial
   midpoint-clustered inputs. unpack_q4 stacked-nibble interleave: 1.6x,
-  bit-identical. (MEASURED, dev box; `benchmarks/RESULTS.md`.)
+  bit-identical. (MEASURED; `benchmarks/RESULTS.md`.)
 - Server, load-verified (240 requests @ 32 concurrent clients, 240/240;
   12-payload chaos suite clean): listen backlog 5 → 128 (stdlib default
   reset connections under burst), unsupported methods → clean JSON 405,

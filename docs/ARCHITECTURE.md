@@ -158,7 +158,7 @@ explicitly.
   paging machinery; very long contexts page KV to NVMe too.
 - Oracle mispredictions cost on-demand faults; worst case degrades to FlexGen-like
   streaming, never worse than naive offload.
-- Full 100B validation needs a GPU box (this dev box has none); the repo ships a
+- Full 100B validation needs a GPU machine; until then the repo ships a
   discrete-event simulator calibrated to RTX 2050 / NVMe specs plus small-model
   end-to-end correctness tests of the paging machinery.
 
