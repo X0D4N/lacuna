@@ -1,5 +1,38 @@
 # Lacuna — Week Hardening Plan (Oct 17–23, 2026)
 
+## SATURDAY OCT 24 — PUSH CHECKLIST (written 2026-10-23, final cron run)
+
+Release 0.3.0 is fully baked locally: suite **192/192 green** (verified 2026-10-23),
+sdist builds + wheel installs cleanly in a fresh isolated venv, `lacuna simulate` +
+API smoke OK, examples runnable verbatim, zero TODOs, no macOS paths, mock backend
+explicitly labeled in every user-facing flow. Repo lives at
+https://github.com/CYPHERLYNX/lacuna (currently PRIVATE — his standing call
+2026-10-19). NOTHING pushes until Fahad clears the two gates below.
+
+1. [ ] **GATE A — distribution decision (his call):**
+     - Option A: flip the repo PUBLIC.
+     - Option B: publish to PyPI as `lacuna-llm` (name confirmed free 2026-10-22).
+       Fahad supplies the PyPI API token at run time — burn-on-sight, never stored.
+2. [ ] **GATE B — PAT re-paste:** Fahad re-pastes his GitHub classic PAT in chat
+     (7-day expiry; never stored, never committed).
+3. [ ] **PUSH** (all branches already merged to `master`; HEAD ae26803):
+     `cd ~/workspace/lacuna && git remote set-url origin https://<PAT>@github.com/CYPHERLYNX/lacuna.git && git push origin master`
+4. [ ] **VERIFY LIVE:** README renders on GitHub; CHANGELOG current; `git log`
+     on the live repo matches local `master` (all commits present).
+5. [ ] **PYPI (only if Option B):**
+     `python -m build && python -m twine upload --username __token__ dist/*`
+     with the token Fahad supplies; then `pip install lacuna-llm` on a clean
+     machine and `lacuna --version` == 0.3.0.
+6. [ ] **POST-PUSH SMOKE:** `lacuna --version`, `lacuna simulate`,
+     one example from `examples/` verbatim; `pip install lacuna-llm` works
+     from PyPI (Option B) or fresh `git clone` + `install.sh` works (Option A).
+
+**Honest caveats to keep in all release comms:** the engine backend is the
+labeled mock — real-weight inference is NOT wired; showcase claims stay inside
+what's proven (paging / exactness / simulator / APIs); real-hardware validation
+(GPU box), real-tree llama.cpp compile, and real-weight shadow scoring remain
+open and must not be implied as done.
+
 Owner: Fahad. Deadline: Saturday Oct 24, 2026 — professional, future-invention level,
 trending-ready. **UPDATE 2026-10-18: repo is LIVE at https://github.com/CYPHERLYNX/lacuna**
 (repo created + full history pushed via his classic PAT; branch `master`).
