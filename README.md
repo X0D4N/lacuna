@@ -70,15 +70,14 @@ Full per-model table in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
 Linux and Windows 11 only. No macOS support, by design.
 
 ```bash
-# Debian / Ubuntu
-sudo apt install python3 python3-pip && pip install lacuna-llm
-# Arch
-sudo pacman -Sy python python-pip && pip install lacuna-llm
-# Windows 11 (PowerShell)
-pip install lacuna-llm
-# From source (either OS)
+# From source (either OS) — the install route that works today
+git clone https://github.com/CYPHERLYNX/lacuna.git && cd lacuna
 ./install.sh        # Linux: detects apt vs pacman
 # .\install.ps1     # Windows 11: installs Python via winget if missing
+
+# PyPI (package name reserved: lacuna-llm — publishing in progress;
+# until it lands, use the source install above)
+# pip install lacuna-llm
 ```
 
 ## Quickstart
