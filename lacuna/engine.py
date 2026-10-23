@@ -428,7 +428,11 @@ class Engine:
     generation is then llama.cpp dense inference through
     :class:`LlamaServerBackend` and ``mode`` reads ``"libllama-dense"``.
     Without a binary, the ``.gguf`` is auto-converted to ``.lac`` (cached
-    next to the source) and run through the paged orchestration path.
+    next to the source) and run through the paged orchestration path. That
+    path exercises the pager/oracle/scheduler over the real pages but does
+    NOT execute the model's transformer math, so its text is a simulation
+    of generation — always labeled ``[simulated]``, never presented as the
+    model's own output.
 
     ``exact=True`` (default): the exactness guarantee — output identical to
     the dense baseline by construction; the oracle only schedules prefetches.
@@ -461,14 +465,17 @@ class Engine:
         self.mode = "mock"
         self.store: PagedWeightStore | None = None
         self._backend: LlamaServerBackend | None = None
+        self._real_file = False  # a real model file was loaded from disk
         self.libllama = _try_load_libllama()
 
         if model_path.endswith(".lac") and os.path.exists(model_path):
+            self._real_file = True
             self.store = PagedWeightStore(
                 model_path, hot_budget_bytes=int(self.hw.ram_hot_budget_gb * 1024**3)
             )
             self.mode = "lacuna"
         elif model_path.endswith(".gguf") and os.path.exists(model_path):
+            self._real_file = True
             binary = _find_llama_server(llama_server)
             if binary is not None:
                 # Real inference: the actual model, served by llama.cpp.
@@ -508,6 +515,14 @@ class Engine:
         text = self._engine.generate(prompt, max_tokens=max_tokens)
         if self.mode == "mock":
             return f"[mock] {text}"
+        if self._real_file:
+            # A real model file is loaded, but generation is going through
+            # the paged orchestration path, which does not execute the
+            # model's transformer math. Label it — silently returning
+            # simulated text as if it were the model's answer was a real
+            # defect (caught 2026-10-23 by an independent verification run
+            # on a real GGUF in a default environment).
+            return f"[simulated] {text}"
         return text
 
     def close(self):

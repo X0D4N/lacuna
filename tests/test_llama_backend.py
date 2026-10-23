@@ -148,3 +148,27 @@ def test_real_inference_end_to_end():
         assert "[mock]" not in out
     finally:
         eng.close()
+
+
+def test_real_file_without_backend_is_labeled_simulated(tmp_path):
+    """Regression (2026-10-23): Engine on a real .lac with no llama-server
+    backend must label orchestration output [simulated] — never return
+    simulated text as if it were the model's own answer."""
+    import numpy as np
+
+    from lacuna.engine import Engine
+    from lacuna.pager import LacWriter
+    from lacuna.quant import Q4
+
+    p = str(tmp_path / "tiny.lac")
+    rng = np.random.default_rng(11)
+    with LacWriter(p, page_size=4096) as w:
+        for i in range(2):
+            w.add_tensor(f"t{i}", rng.standard_normal((32, 16)).astype(np.float32),
+                         layer=0, precision=Q4)
+    eng = Engine(p)
+    try:
+        out = eng.generate("hello", max_tokens=4)
+        assert out.startswith("[simulated]"), out
+    finally:
+        eng.close()
