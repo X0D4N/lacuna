@@ -61,7 +61,8 @@ class PagedQwen2:
 
     def __init__(self, gguf_path: str, lac_path: str | None = None,
                  hot_budget_bytes: int = 256 * 1024 * 1024,
-                 dequant_budget_bytes: int | None = None):
+                 dequant_budget_bytes: int | None = None,
+                 enable_prefetch: bool = True):
         md, infos, _ = parse_gguf(gguf_path)
         if md.get("general.architecture") != "qwen2":
             raise PagedModelError(
@@ -122,6 +123,13 @@ class PagedQwen2:
             if dequant_budget_bytes is not None
             else int(hot_budget_bytes)
         )
+        # Next-layer prefetch (see _layer_page_ids): while layer li
+        # computes, the pager loads layer li+1's pages on its pool, so
+        # disk latency overlaps compute. Prefetch moves the same bytes
+        # earlier — it can never change generated ids; a wrong or
+        # missing prediction costs a demand fault, never correctness.
+        # Pass enable_prefetch=False for a bit-identical plain run.
+        self._enable_prefetch = bool(enable_prefetch)
         # RoPE frequencies: theta^(-2i/dim) for i in 0..dim/2-1.
         self._inv_freq = self.rope_theta ** (
             -np.arange(0, self.head_dim, 2, dtype=np.float32) / self.head_dim
@@ -288,6 +296,47 @@ class PagedQwen2:
     def _silu(x: np.ndarray) -> np.ndarray:
         return x / (np.float32(1.0) + np.exp(-x))
 
+    # -- prefetch ---------------------------------------------------------
+    _LAYER_TENSORS = (
+        "attn_norm.weight",
+        "attn_q.weight", "attn_k.weight", "attn_v.weight",
+        "attn_q.bias", "attn_k.bias", "attn_v.bias",
+        "attn_output.weight",
+        "ffn_norm.weight",
+        "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight",
+    )
+
+    def _layer_page_ids(self, li: int) -> list[int]:
+        """Raw page ids for layer ``li``'s tensors, in demand order.
+
+        Skips tensors already in the dequantized cache (a demand for them
+        would not fault) and, with fused-key awareness, skips q/k/v
+        components when the fused ``qkv`` entry is cached (likewise
+        gate/up when ``gateup`` is cached) — the components are dropped
+        from ``_dq`` on fusion, so this matches exactly what ``_w`` will
+        demand. Names with no tensor id are skipped (some files lack
+        biases). Only the single forward thread touches ``_dq``, so the
+        unsynchronized check here is safe; prefetch threads touch only
+        the store's locked cache.
+        """
+        base = f"blk.{li}."
+        dq = self._dq
+        skip: set[str] = set()
+        if base + "qkv" in dq:
+            skip.update(("attn_q.weight", "attn_k.weight", "attn_v.weight",
+                         "attn_q.bias", "attn_k.bias", "attn_v.bias"))
+        if base + "gateup" in dq:
+            skip.update(("ffn_gate.weight", "ffn_up.weight"))
+        pages: list[int] = []
+        for suffix in self._LAYER_TENSORS:
+            if suffix in skip or base + suffix in dq:
+                continue
+            tid = self.store.tensor_id(base + suffix)
+            if tid is None:
+                continue
+            pages.extend(e["page_id"] for e in self.store.tensor_pages(tid))
+        return pages
+
     # -- forward --------------------------------------------------------
     def forward(self, ids: list[int], pos_offset: int = 0) -> np.ndarray:
         """Run ``ids`` through the model; return last-position logits (f32)."""
@@ -297,6 +346,16 @@ class PagedQwen2:
         x = self._embed_rows(ids)  # (T, hidden), sliced, never held whole
         for li in range(self.n_layer):
             base = f"blk.{li}."
+            if self._enable_prefetch and li + 1 < self.n_layer:
+                # Fire-and-forget, one layer ahead only: the handle is
+                # intentionally not retained — the pool holds the
+                # futures, and close() waits for them. The next layer's
+                # demand faults (via _w) are the fence: if prefetch
+                # missed or lost a page, it faults on demand, exactly
+                # as in a plain run. Head blocks are NOT prefetched
+                # (simplest correct integration; the head is demanded
+                # once per forward, after all layers).
+                self.store.prefetch(self._layer_page_ids(li + 1))
             h = self._rmsnorm(x, self._w(base + "attn_norm.weight"))
             qkv_w, qkv_b = self._fused_qkv(base)
             qkv = h @ qkv_w.T + qkv_b

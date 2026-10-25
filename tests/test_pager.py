@@ -48,7 +48,9 @@ def test_eviction_respects_budget(spp_path):
 
 def test_prefetch_and_hit_rate(spp_path):
     with PagedWeightStore(spp_path, hot_budget_bytes=10**9) as s:
-        s.prefetch(list(range(s.n_pages)))
+        # prefetch is async now: residency holds only after the wait.
+        handle = s.prefetch(list(range(s.n_pages)))
+        assert s.wait_prefetch(handle) == s.n_pages
         assert set(s.hot_pages()) == set(range(s.n_pages))
         for i in range(s.n_pages):
             s.get_page(i)

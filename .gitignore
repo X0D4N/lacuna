@@ -14,9 +14,13 @@ htmlcov/
 # Model artifacts (never commit weights)
 *.gguf
 *.lac
+*.lac.hotset
 *.safetensors
 *.bin
 *.npz
+*.pt
+*.ckpt
+*.pth
 # OS
 .DS_Store
 Thumbs.db

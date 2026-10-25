@@ -4,157 +4,226 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
-**Sparse-paged LLM inference for very large models on small hardware.**
+Lacuna runs large language models that do not fit in RAM by paging their
+weights from disk, with output exact by construction in the default mode.
+The headline claim is the big-model one, and it is stated below with
+measured numbers only. Everything else in this file is secondary to that.
 
-Lacuna runs models that do not fit in RAM or VRAM by paging their weights
-from NVMe on demand — and makes that fast enough to be usable by predicting
-which weights are needed *before* they are needed. A small activation
-oracle looks K tokens ahead and produces the union of weight pages those
-tokens will touch; the pager streams exactly those pages while the current
-token computes. Prediction only schedules memory, never math: in the
-default exact mode the output is bit-identical to running the model dense,
-which the test suite proves (including against a deliberately broken
-oracle — a bad prediction costs time, never correctness).
+## What is proven (measured)
 
-Minimum target hardware: RTX 2050 (4 GB VRAM), 6 GB RAM, NVMe SSD.
-Linux (Debian/Arch) and Windows 11. Python, stdlib + numpy only.
+All figures in this section are **measured** and come from
+[`PAGED_GENERATION_PROOF.md`](PAGED_GENERATION_PROOF.md) and
+[`REAL_WEIGHTS_LADDER_R2.md`](REAL_WEIGHTS_LADDER_R2.md). Anything not
+measured is labeled as such. No simulator numbers appear here.
+
+### 110B: real tokens through the pager
+
+On a Kaggle CPU host (4 vCPU, 32 GB RAM), the paged executor loaded
+Qwen1.5-110B-Chat Q2_K (41,175,701,984 bytes, SHA-256
+`922e4ce5…6062`, public file, no token) and generated real, coherent
+tokens:
+
+> " Paris. It is located in the north"
+
+- Download: 1428.8 s at 28.8 MB/s. Conversion to `.lac` (exact policy,
+  963/963 tensors raw): 324.2 s.
+- Generation, prompt "The capital of France is": 8 tokens before a time
+  cap cut it off. Prefill 2148.3 s; per-token 2093.74–2191.95 s
+  (about 35 minutes per token). Store: 181,525 faults, 366.9 GB read.
+  Peak RSS 19,864.2 MB; the 8 GB hot and 8 GB dequant budgets held, no
+  out-of-memory.
+- Second prompt ("Name three primary colors"): prefilled in 2249.8 s,
+  emitted 0 tokens. The stop reason is not recorded — missing, not
+  guessed.
+- Dense baseline: **not completed**. The dense run timed out at the
+  600 s cap, and the harness's own timeout handler then crashed the
+  script (`TypeError`), which is why the kernel status reads ERROR.
+  That failure is in the baseline harness, not the pager — but it means
+  **no dense token-identity comparison exists at 110B**. The mechanism
+  is proven at this scale; token-identity against dense is not, and
+  speed at this scale is not: ~35 min/token on free-CPU hardware is
+  unusable as-is.
+
+### 70B / 104B: conversion ladder, bit-exact
+
+Run 2 of the real-weights ladder (corrected run; run 1 found a real
+`>2 GiB` read bug that truncated one tensor, and the fix is what run 2
+verifies):
+
+| Model | Convert | Reconstruction vs source bytes | Pager probe @ 512 MiB | Paged matvec vs dense |
+|---|---|---|---|---|
+| Llama-3.3-70B Q4_K_M | 319.5 s, `.lac` 42,513,323,248 bytes | 724/724 tensors, 42,512,531,712 bytes, 0 mismatches | 13/13 verified, budget held | 3 tensors, max abs diff 0.0 |
+| Command R+ 104B Q2_K | 305.0 s, `.lac` 39,487,197,557 bytes | 642/642 tensors, 39,486,472,192 bytes, 0 mismatches | 13/13 verified, budget held | 3 tensors, max abs diff 0.0 |
+| Qwen3-30B-A3B Q4_K_M | 115.5 s (run 1) | 579/579 tensors, 0 mismatches (run 1 full; run 2 spot re-check 25/25) | 13/13 verified, budget held | 3 tensors, max abs diff 0.0 |
+
+One measured contrast, from the dense side: a 42.5 GB dense model could
+not even load on the 32 GB host (llama-server SIGKILLed during load).
+Lacuna's path never holds the model in RAM, which is the whole point
+of paging it. Full ladder reports:
+[`REAL_WEIGHTS_LADDER.md`](REAL_WEIGHTS_LADDER.md),
+[`REAL_WEIGHTS_LADDER_R2.md`](REAL_WEIGHTS_LADDER_R2.md).
+
+### 7B: speculative decoding is faster, and exact
+
+With a 0.5B-class draft model verifying against a 7B target (K=4,
+target budgets 256 MB page + 256 MB dequant, draft 128 MB + 128 MB):
+
+- Speculative: 32 tokens in 8 rounds, 24/32 accepted (75%),
+  4.0 tokens per target pass, 0.0144 tok/s, peak RSS 2167 MB.
+- Plain paged on the same prompt: ≈0.0055 tok/s. Speedup ≈2.6x.
+- Token ids identical 32/32 between speculative and plain. The
+  mechanism is exact by construction; the draft is what makes it fast,
+  and this is the result that proves a real draft does so. (A weaker
+  n-gram draft, by contrast, was exact but slower than plain — the
+  draft quality is the gap, not the mechanism.)
+- Dense comparison at 7B diverged at one token (dense `.` vs paged
+  `,` at token 13). Verdict, measured: **near-tie, not a bug** — paged
+  margin 0.002362, dense margin ≈0.0064, same top-5 candidate set,
+  13/13 self-consistent earlier positions. Greedy decoding amplifies a
+  coin flip into a visible text difference. See the proof doc for the
+  full table and the stated residuals.
 
 ## Install
 
+Python 3.10 or newer. The only runtime dependency is numpy.
+
 ```bash
 git clone https://github.com/CYPHERLYNX/lacuna.git && cd lacuna
-./install.sh        # Linux
-# .\install.ps1     # Windows 11 (installs Python via winget if missing)
+pip install .            # or: pip install -e .  for an editable install
 ```
 
-A PyPI package (`lacuna-llm`) is in preparation; until it is published,
-install from source as above.
+`./install.sh` (Linux, Debian/Arch) and `./install.ps1` (Windows 11)
+do the same via the system package manager. If your venv has no
+setuptools, pip's build isolation downloads it automatically when
+network is available; otherwise install setuptools first. The package
+is not published on PyPI yet — install from source as above.
 
-## Usage
+## Quickstart: run a big model first
+
+This is the route the proof above used. One command resolves a
+HuggingFace repo id, downloads the GGUF, converts it to Lacuna's paged
+`.lac` format, and runs it through the pager:
 
 ```bash
-lacuna pull <huggingface-repo>     # download a GGUF model + convert to .lac
-lacuna run model.gguf "Explain sparse attention"
-lacuna run model.gguf "..." --extreme   # adaptive precision, faster, lossy
-lacuna simulate                    # estimated tok/s for your hardware class
+lacuna run second-state/Qwen1.5-110B-Chat-GGUF "The capital of France is" --max-tokens 8
 ```
 
-`--exact` is the default: per-page adaptive precision (Q4/Q2/ternary) is
-available only under `--extreme`, as an explicit opt-in.
+What happens, step by step:
 
-**OpenAI-compatible server** — works with any OpenAI client library:
+1. `lacuna run <owner>/<repo>` pulls if missing: it picks the GGUF in
+   the repo (Q4_K_M first, else the smallest file), downloads it with
+   resume to `~/.cache/lacuna/models/<owner>__<repo>/`, and converts
+   it to `.lac` beside it. The conversion is exact-policy by default:
+   source bytes are stored raw, never re-quantized. A second run
+   reuses the existing `.lac` and downloads nothing.
+2. Generation runs through the pager in exact mode (the default).
+   The CLI prints its mode on startup — `mode: lacuna` means the real
+   paged executor; anything else is labeled, never silent.
+
+Honest time and disk expectations, from the measured 110B run above:
+
+- Disk: about 85 GB free for a 110B-class model (the GGUF plus its
+  `.lac`, roughly the same size under exact policy).
+- Download of 41.2 GB took 1428.8 s on the measured connection; yours
+  depends on your network. Conversion took 324.2 s.
+- Generation on CPU-only weak hardware is slow: about 35 minutes per
+  token at 110B scale on a 4-vCPU host. The 8-token proof above took
+  hours. Do not expect interactive speed from a 110B on a CPU-only
+  machine — usable speed at that scale is unmeasured (see "Not yet").
+- The 110B proof ran on a 32 GB host with 8 GB budgets. **110B on the
+  6 GB floor below is unmeasured.** What is measured at floor-class
+  budgets is the 7B run above (256 MB budgets, 2167 MB peak RSS).
+
+Hardware floor (design target): RTX 2050 (4 GB VRAM), 6 GB RAM, NVMe
+SSD. Linux (Debian/Arch) and Windows 11.
+
+## Smoke test: small model, labeled as such
+
+This only proves your install works. It is **not** evidence for the
+big-model claim above — never read it as such.
 
 ```bash
-lacuna serve model.gguf --port 8080
+lacuna pull Qwen/Qwen2.5-0.5B-Instruct-GGUF
+lacuna run Qwen/Qwen2.5-0.5B-Instruct-GGUF "The capital of France is" --max-tokens 32
 ```
 
-```python
-from openai import OpenAI
-client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="not-needed")
-r = client.chat.completions.create(
-    model="lacuna-mock",
-    messages=[{"role": "user", "content": "Hello"}],
-    max_tokens=64,
-)
-```
-
-Endpoints: `GET /health`, `GET /v1/models`, `POST /v1/completions`,
-`POST /v1/chat/completions` (SSE streaming). An Ollama-compatible shim is
-available via `lacuna serve --ollama`.
-
-**MCP server** — for agent frameworks:
-
-```bash
-lacuna mcp
-```
-
-```json
-{ "mcpServers": { "lacuna": { "command": "lacuna", "args": ["mcp"] } } }
-```
-
-**Python:**
+Expect `mode: lacuna` and coherent text beginning with ` Paris`.
+Wall time depends on machine load and budget; the 0.5B demo is small
+and is not the result this repo is selling. The same call works from
+Python:
 
 ```python
 from lacuna import Engine
-print(Engine("model.lac").generate("hello"))
+print(Engine("model.gguf.lac").generate("hello"))
 ```
 
-Runnable examples are in [`examples/`](examples/). The security model
-(local-first, no telemetry, localhost by default) is in
-[`SECURITY.md`](SECURITY.md).
+## How it works, in plain words
 
-## How it works
+1. **Convert.** `lacuna convert model.gguf model.lac` (or `pull`, which
+   converts automatically) copies the model's tensors into 2 MB pages
+   in a `.lac` file. Under the default exact policy the bytes are
+   stored raw — the `.lac` is the model, paged, not a re-quantization.
+2. **Page.** At run time the pager faults pages from disk under a hard
+   budget (LRU, exact-length reads) and never holds the whole model.
+   A dequantized-weight cache, also bounded and evictable, keeps
+   repeat tokens from re-decoding the same weights.
+3. **Execute.** The real executor (currently Qwen2 only) runs the
+   model's own transformer math — RMSNorm, grouped-query attention,
+   half-rotation RoPE, SwiGLU, KV cache, greedy decoding — with every
+   weight byte arriving through the pager. If the executor cannot load
+   a model, the engine falls back to a labeled `[simulated]` path and
+   keeps the reason inspectable; a downgrade is never silent.
+4. **Speculate (optional, exact).** A small draft model proposes K
+   tokens; the target verifies the whole block in one paged pass and
+   keeps only what it agrees with. Output is identical to plain paged
+   generation by construction — the 7B proof above is the measurement.
+   A bad draft costs time, never correctness.
 
-Five mechanisms, one contract — *reserve the memory before it is needed*:
+Related components live in [`docs/`](docs/): the full architecture
+([`ARCHITECTURE.md`](docs/ARCHITECTURE.md)), the speculative design
+([`SPECULATIVE_PAGED_DESIGN.md`](docs/SPECULATIVE_PAGED_DESIGN.md)),
+prior art ([`PRIOR_ART.md`](docs/PRIOR_ART.md)), and per-model targets
+([`TARGET_MODELS.md`](docs/TARGET_MODELS.md)). `lacuna serve` exposes
+an OpenAI-compatible server (with an Ollama-compatible mode), and
+`lacuna mcp` exposes an MCP server; run either with `--help` for its
+options. `lacuna bench` / `lacuna simulate` print simulator estimates
+— those are labeled simulated wherever they appear and are not results.
 
-1. **Activation oracle** — per-layer predictors estimate which units fire
-   for the next K draft tokens; the union of their pages is the prefetch set.
-2. **Paged weight store** — weights live in a `.lac` file as 2 MB pages,
-   streamed from NVMe with exact-length reads.
-3. **Hot-set residency** — frequently used pages stay resident under hard
-   RAM/VRAM caps (LRU + frequency), persisted across runs with checksums,
-   so repeat runs start warm.
-4. **Overlap scheduler** — prefetch for tokens t+1..t+K runs concurrently
-   with compute for token t; misses fault on demand and are counted.
-5. **Tree speculation** — draft tokens are verified in one sparse pass;
-   acceptance is exact by construction.
+## Not yet
 
-**Ordo** ([`docs/ORDO.md`](docs/ORDO.md)) compiles routing traces into an
-automaton of phase states, each with a pre-assembled page segment, so
-MoE expert pages can be staged as one sequential read instead of scattered
-faults. Full design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Stated plainly, so nobody has to discover these by tripping over them:
 
-## Performance
-
-All figures below are **simulator estimates**, not measurements — the
-simulator is calibrated to published RTX 2050 / NVMe 3.5 GB/s figures and
-its methodology is documented in
-[`benchmarks/METHODOLOGY.md`](benchmarks/METHODOLOGY.md). Measured results
-(codec and pager hot paths, perplexity at small scale) are in
-[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
-
-| Scenario (100B-class, floor hardware) | tok/s | GB/token |
-|---|---|---|
-| Dense, naive streaming | 0.14 | 25.00 |
-| + oracle sparsity (90%) | 1.33 | 2.62 |
-| + speculative K=4 over union mask (Lacuna, exact) | 3.54 | 0.99 |
-| MoE 100B (20B active), hot-set resident | 14.00 | 0.25 |
-
-For context: no measured system currently exceeds ~5 tok/s for 100B+
-models on ≤4 GB VRAM with output quality held
-([`docs/PRIOR_ART.md`](docs/PRIOR_ART.md)). Treat the Lacuna figures as
-targets for the real-hardware validation below, not as results.
-
-## Status
-
-Current release: **0.3.0**. What is implemented and tested (192 tests):
-the paging engine, exactness guarantees, codecs, oracle and Ordo,
-warm-start cache, the CLI, the OpenAI/Ollama/MCP servers, and the
-llama.cpp backend-buffer contract (`integrations/llama.cpp/`).
-
-What is not done yet, plainly:
-
-- The generation backend wired to the servers today is a deterministic
-  reference implementation (responses are labeled `[mock]`). Real-weight
-  GGUF execution through the pager is the next milestone; the engine-swap
-  interface it will plug into already exists.
-- Real-hardware validation on a 4 GB VRAM machine is pending; until then
-  all speed figures are simulator estimates, as labeled above.
-- PyPI publishing is in preparation.
-
-Roadmap and per-model targets (including the trillion-parameter tier):
-[`docs/TARGET_MODELS.md`](docs/TARGET_MODELS.md).
-
-## Related work
-
-PowerInfer, FlexGen, HOBBIT (closest prior art), EAGLE, BitNet — and what
-differs here — are surveyed in [`docs/PRIOR_ART.md`](docs/PRIOR_ART.md).
+- **Prefetch pipelining is implemented, not yet measured at 110B.**
+  Async submit with a pager stats-lock fix is in
+  (`lacuna/pager.py`, `lacuna/paged_model.py`), with correctness
+  tests green on a tiny model and a smoke check on the 0.5B.
+  The 110B measurement kernel is launched and running; its
+  numbers land when it finishes. Until then, no 110B prefetch
+  speed is claimed.
+- **GPU executor core is built, GPU measurements pending.** A
+  single Qwen2 layer forward (PyTorch CUDA primary, numpy
+  fallback) is in [`lacuna/gpu_executor.py`](lacuna/gpu_executor.py),
+  CPU-validated (14 passed, 1 CUDA-only test skipped here).
+  The Kaggle GPU test is launched; full-model wiring waits
+  on it passing. No GPU speed is claimed anywhere in this repo.
+- **110B dense token-identity is unproven** (no baseline completed, as
+  above). **110B on the 6 GB floor is unmeasured.**
+- **Real executor supports Qwen2 only, for now.** Other architectures
+  fall back to the labeled `[simulated]` path.
+- **Exactness is token-exact until near-ties**, not bit-exact across
+  implementations: at genuinely ambiguous positions (0.5B step 19,
+  7B token 13, both measured), float rounding flips the greedy argmax
+  between implementations. That is noise, not a logic error, and it is
+  the reason near-tie margins are reported rather than hidden.
+- PyPI publishing is in preparation; the 0.3.0 package is source-only
+  for now.
 
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). House rules: stdlib + numpy
 only, every published number measured or labeled simulated, Linux +
-Windows 11 only.
+Windows 11 only. The security model (local-first, no telemetry,
+localhost by default) is in [`SECURITY.md`](SECURITY.md).
 
 ## License
 

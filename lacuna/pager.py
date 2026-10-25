@@ -35,7 +35,7 @@ import os
 import struct
 import threading
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
 
 import numpy as np
 
@@ -207,6 +207,24 @@ class LacWriter:
 
 
 # ------------------------------------------------------------- reader ---
+
+
+class PrefetchHandle:
+    """One async prefetch batch (see :meth:`PagedWeightStore.prefetch`).
+
+    ``pages`` is the deduped requested set; ``futures`` covers only the
+    pages missing at submit time (already-resident pages need no load).
+    ``errors`` collects ``(page_id, exception)`` for payload loads that
+    failed — prefetch never raises for those; the demand fault is the
+    loud path. The pool holds the futures, so a caller may drop the
+    handle (fire-and-forget); ``close()`` still waits for the pool.
+    """
+
+    def __init__(self, pages: list[int]):
+        self.pages = list(pages)
+        self.futures: list = []
+        self.errors: list = []
+        self._errors_lock = threading.Lock()
 
 
 class PagedWeightStore:
@@ -395,21 +413,28 @@ class PagedWeightStore:
     # -- public ---------------------------------------------------
 
     def get_page(self, idx: int) -> np.ndarray:
-        """Return page idx, faulting from NVMe on miss. Updates EWMA frequency."""
+        """Return page idx, faulting from NVMe on miss. Updates EWMA frequency.
+
+        Stats and frequency updates happen under the cache lock, so
+        concurrent readers/prefetchers cannot lose counts: each get_page
+        increments exactly one of hits/faults (concurrent duplicate faults
+        still count twice, as before). The page load itself stays outside
+        the lock, so faults never serialize callers.
+        """
         with self._lock:
             hit = idx in self._cache
             if hit:
                 arr, _ = self._cache[idx]
                 self._cache.move_to_end(idx)
-        if hit:
-            self.stats["hits"] += 1
-        else:
-            arr, nbytes = self._load_page(idx)
+                self.stats["hits"] += 1
+                self._freq[idx] = 0.9 * self._freq.get(idx, 0.0) + 0.1
+                return arr
+        arr, nbytes = self._load_page(idx)
+        with self._lock:
             self.stats["faults"] += 1
             self.stats["bytes_read"] += nbytes
-            self._insert(idx, arr, nbytes)
-        freq = self._freq  # local bind: one attribute lookup per call
-        freq[idx] = 0.9 * freq.get(idx, 0.0) + 0.1
+            self._freq[idx] = 0.9 * self._freq.get(idx, 0.0) + 0.1
+        self._insert(idx, arr, nbytes)
         return arr
 
     def is_resident(self, idx: int) -> bool:
@@ -456,21 +481,81 @@ class PagedWeightStore:
             faults += 1
         return faults
 
-    def prefetch(self, indices) -> None:
-        """Async prefetch: submit reads now, insert into hot-set on completion."""
-        futs = []
+    def prefetch(self, indices) -> "PrefetchHandle":
+        """True async prefetch: submit page loads now, return WITHOUT blocking.
+
+        Returns a :class:`PrefetchHandle` immediately. Payload loads run on
+        the pool; on completion each page is inserted into the hot-set
+        (``_insert`` is idempotent, so a demand fault racing the prefetch
+        cannot duplicate it). Callers that need residency use
+        :meth:`wait_prefetch` or the blocking :meth:`ensure_resident`.
+
+        Fail-fast on corrupt metadata: every missing page's header is
+        validated synchronously first (``page_shape`` — 13-byte metadata
+        reads, no payload, no dequant), so a header/table precision
+        mismatch raises ValueError HERE, the same contract the old
+        synchronous prefetch had. Payload corruption is NOT validated
+        here: a failed payload load is recorded on ``handle.errors`` and
+        skipped — prefetch never fails loud, and the demand fault stays
+        the loud path for payload problems.
+
+        Prefetch can never change what compute reads: it moves the same
+        bytes into the cache earlier. A wrong or missing prediction costs
+        a later demand fault (time), never correctness.
+        """
+        seen = set()
+        uniq: list[int] = []
+        for i in indices:
+            if i not in seen:
+                seen.add(i)
+                uniq.append(i)
         with self._lock:
-            wanted = [i for i in indices if i not in self._cache]
+            wanted = [i for i in uniq if i not in self._cache]
+        # Synchronous header validation, before any payload load is
+        # submitted. (page_shape raises ValueError on a header/table
+        # precision mismatch; an unreadable header is re-raised as
+        # ValueError so the fail-fast contract is one exception type.)
         for i in wanted:
-            futs.append(self._pool.submit(self._load_page, i))
-        self.stats["prefetches"] += len(futs)
-        for i, fut in zip(wanted, futs):
             try:
-                arr, nbytes = fut.result()
-            except OSError:
-                continue
+                self.page_shape(i)
+            except struct.error as e:
+                raise ValueError(f"page {i}: unreadable page header") from e
+        handle = PrefetchHandle(wanted)
+        with self._lock:
+            self.stats["prefetches"] += len(wanted)
+        for i in wanted:
+            fut = self._pool.submit(self._load_page, i)
+            handle.futures.append(fut)
+            fut.add_done_callback(
+                lambda f, _i=i: self._prefetch_done(handle, _i, f)
+            )
+        return handle
+
+    def _prefetch_done(self, handle: "PrefetchHandle", idx: int, fut) -> None:
+        """Pool callback: insert a finished prefetch page, or record the
+        error. ``bytes_read`` is updated under the lock (see get_page);
+        the insert takes its own lock acquisition — locks are never
+        nested here."""
+        try:
+            arr, nbytes = fut.result()
+        except Exception as e:  # prefetch never fails loud; demand faults do
+            with handle._errors_lock:
+                handle.errors.append((idx, e))
+            return
+        with self._lock:
             self.stats["bytes_read"] += nbytes
-            self._insert(i, arr, nbytes)
+        self._insert(idx, arr, nbytes)
+
+    def wait_prefetch(self, handle: "PrefetchHandle", timeout=None) -> int:
+        """Block until this batch's payload loads finish (or ``timeout``
+        elapses), then return the count of requested pages resident
+        afterwards. Eviction-aware and honest: a page evicted between
+        load and this call is NOT counted, even though it was loaded."""
+        if handle.futures:
+            _futures_wait(handle.futures, timeout=timeout)
+        with self._lock:
+            cache = self._cache
+            return sum(1 for p in handle.pages if p in cache)
 
     def hot_pages(self) -> list[int]:
         with self._lock:
@@ -526,11 +611,13 @@ class PagedWeightStore:
         return rows, cols
 
     def frequency(self, idx: int) -> float:
-        return self._freq.get(idx, 0.0)
+        with self._lock:
+            return self._freq.get(idx, 0.0)
 
     @property
     def hit_rate(self) -> float:
-        h, f = self.stats["hits"], self.stats["faults"]
+        with self._lock:
+            h, f = self.stats["hits"], self.stats["faults"]
         return h / (h + f) if (h + f) else 0.0
 
     def close(self) -> None:
