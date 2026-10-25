@@ -72,6 +72,7 @@ import urllib.request
 from . import quant as _q
 from .hardware import HardwareTier, detect_hardware
 from .oracle import Oracle
+from .paged_model import PagedModelError, PagedQwen2
 from .pager import PagedWeightStore
 from .scheduler import OverlapScheduler
 from .speculate import speculative_generate
@@ -427,12 +428,16 @@ class Engine:
     ``$LACUNA_LLAMA_SERVER``, or via the ``llama_server=`` argument):
     generation is then llama.cpp dense inference through
     :class:`LlamaServerBackend` and ``mode`` reads ``"libllama-dense"``.
-    Without a binary, the ``.gguf`` is auto-converted to ``.lac`` (cached
-    next to the source) and run through the paged orchestration path. That
-    path exercises the pager/oracle/scheduler over the real pages but does
-    NOT execute the model's transformer math, so its text is a simulation
-    of generation — always labeled ``[simulated]``, never presented as the
-    model's own output.
+    Without a binary, a supported architecture (currently Qwen2, see
+    :mod:`lacuna.paged_model`) runs through the real paged executor and
+    ``mode`` reads ``"lacuna"`` — genuine model output with every weight
+    byte faulted through the pager. If the paged executor cannot load
+    the model (unsupported architecture, missing tensors, bad file), the
+    engine falls back to the paged orchestration path: it exercises the
+    pager/oracle/scheduler over the real pages but does NOT execute the
+    model's transformer math, so its text is a simulation of generation —
+    always labeled ``[simulated]``, never presented as the model's own
+    output. The fallback reason is kept inspectable on ``paged_error``.
 
     ``exact=True`` (default): the exactness guarantee — output identical to
     the dense baseline by construction; the oracle only schedules prefetches.
@@ -465,15 +470,36 @@ class Engine:
         self.mode = "mock"
         self.store: PagedWeightStore | None = None
         self._backend: LlamaServerBackend | None = None
+        self._paged: PagedQwen2 | None = None
+        self.paged_error: Exception | None = None
         self._real_file = False  # a real model file was loaded from disk
         self.libllama = _try_load_libllama()
 
+        # Try the real paged executor first on real model files; on any
+        # load failure (unsupported arch, missing tensors, bad file) fall
+        # back to the labeled simulated orchestration path below. The
+        # failure is kept on paged_error so a silent downgrade is visible
+        # to callers and tests instead of hidden.
+        def _try_paged(gguf_path: str) -> bool:
+            try:
+                self._paged = PagedQwen2(
+                    gguf_path,
+                    hot_budget_bytes=int(self.hw.ram_hot_budget_gb * 1024**3),
+                )
+            except (PagedModelError, ValueError, OSError, KeyError) as exc:
+                self.paged_error = exc
+                return False
+            self.mode = "lacuna"
+            return True
+
         if model_path.endswith(".lac") and os.path.exists(model_path):
             self._real_file = True
-            self.store = PagedWeightStore(
-                model_path, hot_budget_bytes=int(self.hw.ram_hot_budget_gb * 1024**3)
-            )
-            self.mode = "lacuna"
+            sibling = model_path[: -len(".lac")]
+            if not _try_paged(sibling):
+                self.store = PagedWeightStore(
+                    model_path, hot_budget_bytes=int(self.hw.ram_hot_budget_gb * 1024**3)
+                )
+                self.mode = "lacuna"
         elif model_path.endswith(".gguf") and os.path.exists(model_path):
             self._real_file = True
             binary = _find_llama_server(llama_server)
@@ -483,7 +509,7 @@ class Engine:
                     model_path, server_binary=binary
                 )
                 self.mode = self._backend.mode
-            else:
+            elif not _try_paged(model_path):
                 spp = model_path + ".lac"
                 if not os.path.exists(spp):
                     from .convert import convert as _convert
@@ -512,6 +538,9 @@ class Engine:
     def generate(self, prompt: str, max_tokens: int = 32) -> str:
         if self._backend is not None:
             return self._backend.generate(prompt, max_tokens=max_tokens)
+        if self._paged is not None:
+            text, _ = self._paged.generate(prompt, max_tokens=max_tokens)
+            return text
         text = self._engine.generate(prompt, max_tokens=max_tokens)
         if self.mode == "mock":
             return f"[mock] {text}"
@@ -529,6 +558,9 @@ class Engine:
         if self._backend is not None:
             self._backend.close()
             self._backend = None
+        if self._paged is not None:
+            self._paged.close()
+            self._paged = None
         if self.store is not None:
             if self.warm_start:
                 from .warmstart import default_hotset_path
