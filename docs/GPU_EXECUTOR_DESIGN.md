@@ -160,6 +160,33 @@ measured number is what gets recorded), (d) 110B-scale layer latency
 and VRAM peak recorded, (e) no silent fallback: if CUDA is absent the
 script exits nonzero saying so.
 
+## Kaggle GPU test results (2026-10-25, measured)
+
+Kernel `x0d4n7/lacuna-gpu-executor-test` (private, GPU-enabled),
+status COMPLETE. Raw output kept out of this repo; numbers below are
+copied from its `gpu_results.json`.
+
+Environment: 2x Tesla T4, torch 2.11.0+cu128, CUDA available, no
+install/fix steps needed (torch and CUDA were preinstalled and
+working). CuPy 14.0.1 was also present on the image — noted for the
+gap-4 decision, not used here.
+
+- Dequant parity (GPU vs `lacuna/gguf.py`): Q8_0 max diff 0.0, Q4_K
+  max diff 0.0 — both pass (criterion <= 1e-6).
+- Layer parity vs numpy: tiny layer diff 0.0 (pass); 0.5B-scale layer
+  diff 2.384e-07 (pass, criterion <= 1e-4); real-weight 0.5B layer-0
+  diff 2.384e-07 (pass).
+- Layer latency (synchronized, mean after warmup): tiny 0.001917
+  s/layer, peak VRAM ~8.1 MiB; 0.5B-scale 0.032668 s/layer, peak
+  ~24.8 MiB; 110B-scale synthetic (Q4_K) 0.979421 s/layer, peak VRAM
+  2,789,671,936 B (~2.60 GiB).
+- NOT a generation measurement: the 110B-scale 80-layer extrapolation
+  (0.0128 tok/s) is arithmetic on a synthetic single-layer timing, not
+  tokens generated. It sits below Colibri's 0.05-0.1 tok/s cold floor
+  and is not comparable to it. 110B-scale GPU-vs-numpy parity was
+  skipped by design this pass. Full-model generation is still
+  unwired, so no GPU generation speed is claimed.
+
 ## Gaps (not hidden, in priority order)
 
 1. **Torch dequant kernels for Q2_K/Q3_K/Q5_K/Q6_K/Q5_0.** CPU
