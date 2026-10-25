@@ -7,7 +7,8 @@ This module is the bridge between a real GGUF model file and Lacuna's
    attention config, RoPE, norms, tokenizer vocab/merges/bos/eos) plus the
    tensor index (name, dims, type, data offset). ``convert.parse_gguf_header``
    only *skips* the KV section; this parser *reads* it.
-2. **Dequantize** GGUF block formats (Q5_0, Q8_0, Q4_K, Q6_K, F16, F32) in float32,
+2. **Dequantize** GGUF block formats (Q5_0, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K,
+   Q6_K, F16, F32) in float32,
    mirroring the reference ``dequantize_row_*`` implementations in
    llama.cpp's ``ggml/src/ggml-quants.c`` operation for operation (same
    scale/min packing, same nibble order, same float32 arithmetic). A wrong
@@ -34,8 +35,8 @@ GGUF layout facts used here (v3, little-endian):
 - GGML type ids (this llama.cpp checkout's ggml.h — NOT the older numbering
   some references still show): F32=0, F16=1, Q4_0=2, Q4_1=3, Q5_0=6,
   Q5_1=7, Q8_0=8, Q8_1=9, Q2_K=10, Q3_K=11, Q4_K=12, Q5_K=13, Q6_K=14,
-  Q8_K=15. Only F32, F16, Q5_0, Q8_0, Q4_K, Q6_K are decoded here;
-  anything else raises loudly.
+  Q8_K=15. Decoded here: F32, F16, Q5_0, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K,
+  Q6_K; anything else raises loudly.
 """
 
 from __future__ import annotations
@@ -53,7 +54,10 @@ _TYPE_INFO = {
     1: (1, 2, "f16"),       # F16
     6: (32, 22, "q5_0"),    # Q5_0
     8: (32, 34, "q8_0"),    # Q8_0
+    10: (256, 84, "q2_k"),   # Q2_K
+    11: (256, 110, "q3_k"),  # Q3_K
     12: (256, 144, "q4_k"),  # Q4_K
+    13: (256, 176, "q5_k"),  # Q5_K
     14: (256, 210, "q6_k"),  # Q6_K
 }
 
@@ -256,6 +260,140 @@ def dequant_q4_k(data: bytes, n: int) -> np.ndarray:
     return out.reshape(-1)
 
 
+def dequant_q2_k(data: bytes, n: int) -> np.ndarray:
+    """Mirror of ggml dequantize_row_q2_K: 256 values per 84-byte block.
+
+    Block: 16 scale bytes | 64 qs bytes | fp16 d | fp16 dmin. Two
+    128-value halves; each half consumes 8 scale bytes, one per 16-value
+    group: value = d * (scale & 0xF) * code - dmin * (scale >> 4), where
+    code is the 2-bit field of qs at bit position 2*j within the half's
+    32 qs bytes (j = group index inside the half). Groups run j=0..3
+    with shift 0,2,4,6, each covering two 16-value subgroups (qs[0:16]
+    then qs[16:32] of the half).
+    """
+    nb = n // 256
+    blocks = np.frombuffer(data, dtype=np.uint8, count=nb * 84).reshape(nb, 84)
+    scales = blocks[:, 0:16]
+    qs = blocks[:, 16:80]
+    d = _f16(blocks[:, 80:82]).reshape(nb)
+    dmin = _f16(blocks[:, 82:84]).reshape(nb)
+    out = np.empty((nb, 256), dtype=np.float32)
+    for h in range(2):
+        qh = qs[:, h * 32:(h + 1) * 32]
+        for j in range(4):
+            shift = 2 * j
+            sc1 = scales[:, h * 8 + 2 * j]
+            sc2 = scales[:, h * 8 + 2 * j + 1]
+            dl1 = d * (sc1 & 0x0F).astype(np.float32)
+            ml1 = dmin * (sc1 >> 4).astype(np.float32)
+            dl2 = d * (sc2 & 0x0F).astype(np.float32)
+            ml2 = dmin * (sc2 >> 4).astype(np.float32)
+            base = h * 128 + j * 32
+            out[:, base:base + 16] = (
+                dl1[:, None]
+                * ((qh[:, 0:16] >> shift) & 3).astype(np.float32)
+                - ml1[:, None]
+            )
+            out[:, base + 16:base + 32] = (
+                dl2[:, None]
+                * ((qh[:, 16:32] >> shift) & 3).astype(np.float32)
+                - ml2[:, None]
+            )
+    return out.reshape(-1)
+
+
+def dequant_q3_k(data: bytes, n: int) -> np.ndarray:
+    """Mirror of ggml dequantize_row_q3_K: 256 values per 110-byte block.
+
+    Block: 32 hmask bytes | 64 qs bytes | 12 scale bytes | fp16 d.
+    The 12 scale bytes unpack into 16 6-bit scales (see below); each
+    scale covers one 16-value group with dl = d * (scale - 32). Each
+    value's code is its 2 low bits from qs plus its high bit from
+    hmask: code = low2 - (high_bit ? 0 : 4), so code ranges -4..3.
+    The hmask bytes are NOT advanced between the two 128-value halves:
+    the first half uses hmask bits 0..3 (m = 1,2,4,8) and the second
+    half reuses the same bytes with bits 4..7 (m = 16,32,64,128).
+
+    Scale unpack (ggml's aux-word shuffle, little-endian words a0, a1
+    from scales[0:8], tmp from scales[8:12]):
+    w0 = (a0 & 0x0f0f0f0f) | ((tmp & 0x03030303) << 4)
+    w1 = (a1 & 0x0f0f0f0f) | (((tmp >> 2) & 0x03030303) << 4)
+    w2 = ((a0 >> 4) & 0x0f0f0f0f) | (((tmp >> 4) & 0x03030303) << 4)
+    w3 = ((a1 >> 4) & 0x0f0f0f0f) | (((tmp >> 6) & 0x03030303) << 4)
+    and the 16 scales are w0..w3's bytes in order.
+    """
+    nb = n // 256
+    blocks = np.frombuffer(data, dtype=np.uint8, count=nb * 110).reshape(nb, 110)
+    hm = blocks[:, 0:32]
+    qs = blocks[:, 32:96]
+    raw = blocks[:, 96:108]
+    d = _f16(blocks[:, 108:110]).reshape(nb)
+    a = np.ascontiguousarray(raw).view("<u4").reshape(nb, 3)
+    a0, a1, tmp = a[:, 0], a[:, 1], a[:, 2]
+    k1 = np.uint32(0x03030303)
+    k2 = np.uint32(0x0F0F0F0F)
+    w0 = (a0 & k2) | (((tmp >> np.uint32(0)) & k1) << np.uint32(4))
+    w1 = (a1 & k2) | (((tmp >> np.uint32(2)) & k1) << np.uint32(4))
+    w2 = ((a0 >> np.uint32(4)) & k2) | (((tmp >> np.uint32(4)) & k1) << np.uint32(4))
+    w3 = ((a1 >> np.uint32(4)) & k2) | (((tmp >> np.uint32(6)) & k1) << np.uint32(4))
+    scales = (
+        np.stack([w0, w1, w2, w3], axis=1)
+        .view(np.uint8)
+        .astype(np.int8)
+    )
+    out = np.empty((nb, 256), dtype=np.float32)
+    for h in range(2):
+        qh = qs[:, h * 32:(h + 1) * 32]
+        for j in range(4):
+            bit = h * 4 + j
+            for s in range(2):
+                g = h * 8 + j * 2 + s
+                dl = d * (scales[:, g].astype(np.float32) - np.float32(32))
+                low = ((qh[:, s * 16:(s + 1) * 16] >> (2 * j)) & 3).astype(np.float32)
+                high = (hm[:, s * 16:(s + 1) * 16] >> bit) & 1
+                code = low - np.where(high != 0, np.float32(0), np.float32(4))
+                base = h * 128 + j * 32 + s * 16
+                out[:, base:base + 16] = dl[:, None] * code
+    return out.reshape(-1)
+
+
+def dequant_q5_k(data: bytes, n: int) -> np.ndarray:
+    """Mirror of ggml dequantize_row_q5_K: 256 values per 176-byte block.
+
+    Block: fp16 d | fp16 dmin | 12 scale bytes | 32 qh bytes | 128 qs
+    bytes. Four 64-value groups; group g uses scale/min pair 2g (first
+    32 values) and 2g+1 (next 32) from the Q4_K-style 12-byte packing,
+    low nibbles of its 32 qs bytes for the first 32 values and high
+    nibbles for the next 32, plus the high bit from qh byte bit 2g
+    (first 32) / 2g+1 (next 32): value = d*scale*code - dmin*min with
+    code in 0..31.
+    """
+    nb = n // 256
+    blocks = np.frombuffer(data, dtype=np.uint8, count=nb * 176).reshape(nb, 176)
+    d = _f16(blocks[:, 0:2]).reshape(nb)
+    dmin = _f16(blocks[:, 2:4]).reshape(nb)
+    sc, mn = _q4_k_scales_min(blocks[:, 4:16])
+    qh = blocks[:, 16:48]
+    qs = blocks[:, 48:176]
+    out = np.empty((nb, 256), dtype=np.float32)
+    for g in range(4):
+        d1 = (d * sc[:, 2 * g]).astype(np.float32)
+        m1 = (dmin * mn[:, 2 * g]).astype(np.float32)
+        d2 = (d * sc[:, 2 * g + 1]).astype(np.float32)
+        m2 = (dmin * mn[:, 2 * g + 1]).astype(np.float32)
+        ql = qs[:, g * 32:(g + 1) * 32]
+        c1 = (ql & 0x0F).astype(np.float32) + np.where(
+            ((qh >> (2 * g)) & 1) != 0, np.float32(16), np.float32(0)
+        )
+        c2 = (ql >> 4).astype(np.float32) + np.where(
+            ((qh >> (2 * g + 1)) & 1) != 0, np.float32(16), np.float32(0)
+        )
+        base = g * 64
+        out[:, base:base + 32] = d1[:, None] * c1 - m1[:, None]
+        out[:, base + 32:base + 64] = d2[:, None] * c2 - m2[:, None]
+    return out.reshape(-1)
+
+
 def dequant_q6_k(data: bytes, n: int) -> np.ndarray:
     """Mirror of ggml dequantize_row_q6_K: 256 values per 210-byte block.
 
@@ -290,7 +428,7 @@ def dequant_q6_k(data: bytes, n: int) -> np.ndarray:
     return out.reshape(-1)
 
 
-_DEQUANT = {0: dequant_f32, 1: dequant_f16, 6: dequant_q5_0, 8: dequant_q8_0, 12: dequant_q4_k, 14: dequant_q6_k}
+_DEQUANT = {0: dequant_f32, 1: dequant_f16, 6: dequant_q5_0, 8: dequant_q8_0, 10: dequant_q2_k, 11: dequant_q3_k, 12: dequant_q4_k, 13: dequant_q5_k, 14: dequant_q6_k}
 
 
 def dequantize(data: bytes, ttype: int, n: int) -> np.ndarray:
@@ -332,3 +470,81 @@ def read_tensor(store, info) -> np.ndarray:
         )
     flat = dequantize(blob, info["type"], tensor_numel(info["dims"]))
     return flat.reshape(tensor_shape(info["dims"]))
+
+
+def read_tensor_rows(store, info, r0: int, r1: int) -> np.ndarray:
+    """Read rows ``[r0, r1)`` of a 2-D tensor through a PagedWeightStore.
+
+    Same pager discipline as :func:`read_tensor` (exact policy, every
+    byte via ``store.get_page``), but only the pages overlapping the
+    requested byte range are faulted. Row ``i`` of a 2-D tensor occupies
+    ``(dims[0] // values_per_block) * bytes_per_block`` contiguous bytes
+    — rows are block-aligned exactly when ``dims[0]`` is a multiple of
+    the block size, which is enforced here (otherwise a row would split
+    a quantization block and could not be dequantized alone).
+
+    This is what makes large vocabularies runnable on small machines:
+    the embedding matrix and lm_head are never materialized whole —
+    the executor gathers only the rows it needs (input token ids, one
+    vocab block of logits at a time). A 151936-row head at hidden 896
+    is ~545 MB as float32; at 100B-class hidden sizes it would be
+    gigabytes. The logits *vector* (one float per vocab row) is small
+    and is the only thing ever assembled in full.
+    """
+    if getattr(store, "precision_policy", None) != "exact":
+        raise GGUFError(
+            f"paged executor needs an exact-policy store, got "
+            f"{getattr(store, 'precision_policy', None)!r}"
+        )
+    if len(info["dims"]) != 2:
+        raise GGUFError(
+            f"tensor {info['name']}: read_tensor_rows needs 2-D dims, "
+            f"got {info['dims']}"
+        )
+    if info["type"] not in _TYPE_INFO:
+        raise GGUFError(
+            f"tensor {info['name']}: unsupported GGML type {info['type']}"
+        )
+    n_in = int(info["dims"][0])
+    n_out = int(info["dims"][1])
+    if not (0 <= r0 <= r1 <= n_out):
+        raise GGUFError(
+            f"tensor {info['name']}: row range [{r0}, {r1}) outside "
+            f"[0, {n_out})"
+        )
+    per_block, bytes_per_block, _ = _TYPE_INFO[info["type"]]
+    if n_in % per_block:
+        raise GGUFError(
+            f"tensor {info['name']}: row length {n_in} not a multiple of "
+            f"block size {per_block}; rows cannot be dequantized alone"
+        )
+    row_bytes = (n_in // per_block) * bytes_per_block
+    start = r0 * row_bytes
+    end = r1 * row_bytes
+    tid = store.tensor_id(info["name"])
+    if tid is None:
+        raise GGUFError(f"tensor {info['name']} not present in the store")
+    # Walk pages in order. page_shape reads only the page header, so
+    # boundaries are known without faulting payloads; only overlapping
+    # pages are pulled through get_page.
+    pieces: list[bytes] = []
+    off = 0
+    for e in store.tensor_pages(tid):
+        _, plen = store.page_shape(e["page_id"])  # RAW: (0, payload bytes)
+        p_start, p_end = off, off + plen
+        if p_end > start and p_start < end:
+            arr = store.get_page(e["page_id"])
+            lo = max(start, p_start) - p_start
+            hi = min(end, p_end) - p_start
+            pieces.append(arr[lo:hi].tobytes())
+        off = p_end
+        if off >= end:
+            break
+    blob = b"".join(pieces)
+    if len(blob) != end - start:
+        raise GGUFError(
+            f"tensor {info['name']}: paged row bytes {len(blob)} != "
+            f"wanted {end - start}"
+        )
+    flat = dequantize(blob, info["type"], (r1 - r0) * n_in)
+    return flat.reshape((r1 - r0, n_in))

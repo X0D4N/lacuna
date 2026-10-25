@@ -5,13 +5,15 @@ This is the module that closes Lacuna's core gap. Before it, ``Engine`` in
 output ``[simulated]`` — the transformer math itself was never executed.
 This executor runs a real decoder (Qwen2 architecture, float32 numpy) where
 **every weight byte arrives through** :class:`~lacuna.pager.PagedWeightStore`
-— ``read_tensor`` faults pages under the store's hard LRU budget, and
-``store.stats`` is the audit trail (faults / hits / bytes_read).
+— ``read_tensor`` / ``read_tensor_rows`` fault pages under the store's
+hard LRU budget, and ``store.stats`` is the audit trail (faults / hits
+/ bytes_read).
 
 Design rules, all load-bearing for the honesty claims:
 - No direct file reads of weights anywhere in this module. Metadata comes
   from the GGUF header (that is configuration, not weights); every weight
-  tensor goes through ``lacuna.gguf.read_tensor``.
+  tensor goes through ``lacuna.gguf.read_tensor`` (whole) or
+  ``read_tensor_rows`` (embed/head slices).
 - Greedy decoding only (argmax). Deterministic, directly comparable to
   ``llama-cli --temp 0 --top-k 1`` and to ``LlamaServerBackend`` on the
   same prompt. If a token ever differs from the dense baseline, that is
@@ -19,12 +21,14 @@ Design rules, all load-bearing for the honesty claims:
 - Exact policy only (``read_tensor`` enforces it): the .lac must carry
   source bytes bit-for-bit, so dequantization here is the model's own
   quantization, not a Lacuna re-quantization.
-- v1 scope, stated plainly: the embedding matrix and the lm_head are
-  dequantized once and held (each is 151936x896 float32, ~545 MB) because
-  the lm_head is needed in full at every step; every other tensor streams
-  per forward pass through the pager. A later version can slice those two
-  per row/block; v1 does not claim otherwise. Peak RSS is measured and
-  reported with the demo, not estimated.
+- Sliced embed + head (2026-10-25): the embedding matrix and the
+  lm_head are NEVER materialized whole. Embed rows are gathered only
+  for the input token ids of the current call; lm_head logits are
+  computed in 8192-row blocks and only the logits vector (one float per
+  vocab row) is ever assembled. On the 0.5B each held matrix would be
+  ~545 MB float32; on a 100B-class model each would be ~8 GB — slicing
+  is what makes large vocabularies runnable on the 6 GB floor at all.
+  Peak RSS is measured and reported with the demo, not estimated.
 
 Architecture implemented (Qwen2, verified against the model's own GGUF
 metadata and against llama.cpp's dense output token-for-token): RMSNorm,
@@ -44,7 +48,7 @@ import numpy as np
 
 from .bpe import BPETokenizer
 from .convert import convert as _convert
-from .gguf import parse_gguf, read_tensor
+from .gguf import parse_gguf, read_tensor, read_tensor_rows
 from .pager import PagedWeightStore
 
 
@@ -56,7 +60,8 @@ class PagedQwen2:
     """Qwen2 decoder whose weights live in a PagedWeightStore."""
 
     def __init__(self, gguf_path: str, lac_path: str | None = None,
-                 hot_budget_bytes: int = 256 * 1024 * 1024):
+                 hot_budget_bytes: int = 256 * 1024 * 1024,
+                 dequant_budget_bytes: int | None = None):
         md, infos, _ = parse_gguf(gguf_path)
         if md.get("general.architecture") != "qwen2":
             raise PagedModelError(
@@ -90,22 +95,172 @@ class PagedQwen2:
         if not _os.path.exists(lac):
             _convert(gguf_path, lac, quiet=True)
         self.store = PagedWeightStore(lac, hot_budget_bytes=int(hot_budget_bytes))
-        # v1 held tensors (see module docstring): embed + lm_head + out norm.
-        self.embed = read_tensor(self.store, self.by_name["token_embd.weight"])
-        self.lm_head = read_tensor(self.store, self.by_name["output.weight"])
+        # Only the final norm is held (hidden floats — tiny). Embed and
+        # head are sliced per call (see _embed_rows and forward); holding
+        # either whole would cost ~545 MB on the 0.5B and gigabytes on
+        # 100B-class models.
+        self._embed_info = self.by_name["token_embd.weight"]
+        self._head_info = self.by_name["output.weight"]
         self.out_norm = read_tensor(self.store, self.by_name["output_norm.weight"])
         self.cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        # Dequantized-weight cache (speed work, 2026-10-25): v1
+        # re-dequantized every tensor on every token, which is most of
+        # the 0.14 tok/s cost. This LRU holds dequantized tensors up to
+        # dequant_budget_bytes (default: the pager budget). It does NOT
+        # bypass the pager — every tensor still arrives via read_tensor
+        # on a cache miss — and it is reported separately from the raw
+        # page cache (_dq_bytes vs store._cached_bytes) so the memory
+        # accounting stays inspectable. At budgets below the model's
+        # dequantized size it thrashes like the page cache does; at
+        # budgets that fit, later tokens skip disk reads AND dequant.
+        from collections import OrderedDict
+
+        self._dq: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._dq_bytes = 0
+        self._dq_budget = (
+            int(dequant_budget_bytes)
+            if dequant_budget_bytes is not None
+            else int(hot_budget_bytes)
+        )
         # RoPE frequencies: theta^(-2i/dim) for i in 0..dim/2-1.
         self._inv_freq = self.rope_theta ** (
             -np.arange(0, self.head_dim, 2, dtype=np.float32) / self.head_dim
         )
 
     # -- weight access (pager only) -----------------------------------
+    def _dq_put(self, name: str, arr: np.ndarray) -> None:
+        nbytes = int(arr.nbytes)
+        if nbytes > self._dq_budget:
+            return  # too big to ever cache; caller still uses it
+        while self._dq_bytes + nbytes > self._dq_budget and self._dq:
+            _, old = self._dq.popitem(last=False)
+            self._dq_bytes -= int(old.nbytes)
+        self._dq[name] = arr
+        self._dq_bytes += nbytes
+
+    def _dq_drop(self, name: str) -> None:
+        arr = self._dq.pop(name, None)
+        if arr is not None:
+            self._dq_bytes -= int(arr.nbytes)
+
     def _w(self, name: str) -> np.ndarray:
+        hit = self._dq.get(name)
+        if hit is not None:
+            self._dq.move_to_end(name)
+            return hit
         info = self.by_name.get(name)
         if info is None:
             raise PagedModelError(f"required tensor {name} missing")
-        return read_tensor(self.store, info)
+        arr = read_tensor(self.store, info)
+        self._dq_put(name, arr)
+        return arr
+
+    def _fused_qkv(self, base: str) -> tuple[np.ndarray, np.ndarray]:
+        """One stacked QKV weight+bias, so attention projections are a
+        single GEMM instead of three. The stacked copy replaces its
+        components in the cache, so memory stays ~one copy of the
+        weights, not two."""
+        key = base + "qkv"
+        hit = self._dq.get(key)
+        if hit is not None:
+            self._dq.move_to_end(key)
+            self._dq.move_to_end(key + ".bias")
+            return hit, self._dq[key + ".bias"]
+        w = np.concatenate([
+            self._w(base + "attn_q.weight"),
+            self._w(base + "attn_k.weight"),
+            self._w(base + "attn_v.weight"),
+        ])
+        b = np.concatenate([
+            self._w(base + "attn_q.bias"),
+            self._w(base + "attn_k.bias"),
+            self._w(base + "attn_v.bias"),
+        ])
+        for suffix in ("attn_q.weight", "attn_k.weight", "attn_v.weight",
+                       "attn_q.bias", "attn_k.bias", "attn_v.bias"):
+            self._dq_drop(base + suffix)
+        self._dq_put(key, w)
+        self._dq_put(key + ".bias", b)
+        return w, b
+
+    def _fused_gateup(self, base: str) -> np.ndarray:
+        """One stacked gate+up weight, so the MLP is two GEMMs (fused,
+        down) instead of three."""
+        key = base + "gateup"
+        hit = self._dq.get(key)
+        if hit is not None:
+            self._dq.move_to_end(key)
+            return hit
+        w = np.concatenate([
+            self._w(base + "ffn_gate.weight"),
+            self._w(base + "ffn_up.weight"),
+        ])
+        for suffix in ("ffn_gate.weight", "ffn_up.weight"):
+            self._dq_drop(base + suffix)
+        self._dq_put(key, w)
+        return w
+
+    def _head_block(self, b0: int, b1: int) -> np.ndarray:
+        """One dequantized lm_head row block, LRU-cached in ``_dq``.
+
+        The sliced head (one ``read_tensor_rows`` per block per token)
+        was a speed regression: every token re-dequantized the full
+        136M-value head on the 0.5B. Caching blocks in the existing
+        bounded, evictable ``_dq`` cache restores the cached speed
+        WITHOUT holding the whole matrix — a block is 8192 rows, and
+        blocks still evict under budget pressure, so 100B-class heads
+        stay runnable. The cache key namespace (``#rows:``) cannot
+        collide with tensor names.
+        """
+        key = f"output.weight#rows:{b0}:{b1}"
+        hit = self._dq.get(key)
+        if hit is not None:
+            self._dq.move_to_end(key)
+            return hit
+        w = read_tensor_rows(self.store, self._head_info, b0, b1)
+        self._dq_put(key, w)
+        return w
+
+    def _embed_rows(self, ids: list[int]) -> np.ndarray:
+        """Gather embedding rows for ``ids`` without holding the matrix.
+
+        Unique ids are grouped into contiguous runs; each run is one
+        ``read_tensor_rows`` call (one set of page faults), then rows are
+        reordered back to ``ids`` order. Individual rows are also cached
+        in ``_dq`` (bounded, evictable) so repeated tokens across a long
+        generation skip re-dequantization; a decode step (one id) faults
+        a single row's bytes (~616 B for the 0.5B's Q5_0 rows) on a miss.
+        """
+        if not ids:
+            return np.zeros((0, self.hidden), dtype=np.float32)
+        uniq = sorted(set(int(i) for i in ids))
+        rows: dict[int, np.ndarray] = {}
+        missing: list[int] = []
+        for u in uniq:
+            key = f"token_embd.weight#row:{u}"
+            hit = self._dq.get(key)
+            if hit is not None:
+                self._dq.move_to_end(key)
+                rows[u] = hit
+            else:
+                missing.append(u)
+        if missing:
+            runs: list[tuple[int, int]] = []
+            start = last = missing[0]
+            for u in missing[1:]:
+                if u == last + 1:
+                    last = u
+                else:
+                    runs.append((start, last + 1))
+                    start = last = u
+            runs.append((start, last + 1))
+            for a, b in runs:
+                arr = read_tensor_rows(self.store, self._embed_info, a, b)
+                for k, u in enumerate(range(a, b)):
+                    row = np.array(arr[k], dtype=np.float32, copy=True)
+                    self._dq_put(f"token_embd.weight#row:{u}", row)
+                    rows[u] = row
+        return np.stack([rows[i] for i in ids]).astype(np.float32)
 
     # -- primitives ----------------------------------------------------
     def _rmsnorm(self, x: np.ndarray, w: np.ndarray) -> np.ndarray:
@@ -139,13 +294,17 @@ class PagedQwen2:
         ids = [int(i) for i in ids]
         n_tok = len(ids)
         positions = np.arange(pos_offset, pos_offset + n_tok)
-        x = self.embed[ids].astype(np.float32)  # (T, hidden)
+        x = self._embed_rows(ids)  # (T, hidden), sliced, never held whole
         for li in range(self.n_layer):
             base = f"blk.{li}."
             h = self._rmsnorm(x, self._w(base + "attn_norm.weight"))
-            q = h @ self._w(base + "attn_q.weight").T + self._w(base + "attn_q.bias")
-            k = h @ self._w(base + "attn_k.weight").T + self._w(base + "attn_k.bias")
-            v = h @ self._w(base + "attn_v.weight").T + self._w(base + "attn_v.bias")
+            qkv_w, qkv_b = self._fused_qkv(base)
+            qkv = h @ qkv_w.T + qkv_b
+            q, k, v = np.split(
+                qkv,
+                [self.hidden, self.hidden + self.n_kv * self.head_dim],
+                axis=-1,
+            )
             q = self._rope(q.reshape(n_tok, self.n_head, self.head_dim), positions)
             k = self._rope(k.reshape(n_tok, self.n_kv, self.head_dim), positions)
             v = v.reshape(n_tok, self.n_kv, self.head_dim)
@@ -174,12 +333,22 @@ class PagedQwen2:
                 base + "attn_output.weight"
             ).T
             h2 = self._rmsnorm(x, self._w(base + "ffn_norm.weight"))
-            gate = h2 @ self._w(base + "ffn_gate.weight").T
-            up = h2 @ self._w(base + "ffn_up.weight").T
+            gateup = h2 @ self._fused_gateup(base).T
+            gate, up = gateup[:, : self.ffn], gateup[:, self.ffn :]
             down = (self._silu(gate) * up) @ self._w(base + "ffn_down.weight").T
             x = x + down
         last = self._rmsnorm(x[-1:], self.out_norm)
-        return (last @ self.lm_head.T)[0]
+        # Blocked lm_head: only the logits vector is ever assembled whole.
+        # Greedy needs argmax, but forward() keeps returning the full
+        # vector so generate() is unchanged.
+        vocab = int(self._head_info["dims"][1])
+        logits = np.empty((vocab,), dtype=np.float32)
+        block = 8192
+        for b0 in range(0, vocab, block):
+            b1 = min(b0 + block, vocab)
+            w = self._head_block(b0, b1)
+            logits[b0:b1] = (last @ w.T)[0]
+        return logits
 
     def generate(self, prompt: str, max_tokens: int = 32) -> tuple[str, list[int]]:
         """Greedy-generate from ``prompt``. Returns (text, token ids).

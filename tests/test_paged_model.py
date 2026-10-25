@@ -10,6 +10,7 @@ import os
 import struct
 
 import numpy as np
+import pytest
 
 from lacuna.paged_model import PagedQwen2
 
@@ -131,3 +132,52 @@ def test_engine_uses_paged_for_supported_arch(tmp_path, monkeypatch):
         assert text and not text.startswith("[simulated]")
     finally:
         eng.close()
+
+
+def test_head_blocks_and_embed_rows_cached(tmp_path):
+    # Sliced head/embed must go through the bounded _dq cache (the
+    # pre-fix regression was re-dequantizing the head every token):
+    # after a forward, the head block and the used embed rows are in
+    # _dq, but no whole embed/head matrix is ever held.
+    gguf = build_tiny_gguf(os.path.join(tmp_path, "tiny.gguf"))
+    m = PagedQwen2(gguf, hot_budget_bytes=1024 * 1024)
+    m.forward([0, 1, 2], 0)
+    assert any(k.startswith("output.weight#rows:") for k in m._dq)
+    assert "token_embd.weight#row:0" in m._dq
+    assert "token_embd.weight#row:1" in m._dq
+    assert not hasattr(m, "embed") and not hasattr(m, "lm_head")
+    m.close()
+
+
+def test_read_tensor_rows_matches_slice(tmp_path):
+    from lacuna.gguf import GGUFError, read_tensor, read_tensor_rows
+
+    gguf = build_tiny_gguf(os.path.join(tmp_path, "tiny.gguf"))
+    m = PagedQwen2(gguf, hot_budget_bytes=1024 * 1024)
+    try:
+        for name in ("token_embd.weight", "output.weight"):
+            info = m.by_name[name]
+            full = read_tensor(m.store, info)
+            assert np.array_equal(read_tensor_rows(m.store, info, 0, 4), full)
+            assert np.array_equal(read_tensor_rows(m.store, info, 1, 3), full[1:3])
+            assert np.array_equal(read_tensor_rows(m.store, info, 2, 3), full[2:3])
+        # 1-D tensors (norms) cannot be row-sliced.
+        with pytest.raises(GGUFError):
+            read_tensor_rows(m.store, m.by_name["output_norm.weight"], 0, 1)
+        # Out-of-range rows fail loud.
+        with pytest.raises(GGUFError):
+            read_tensor_rows(m.store, m.by_name["output.weight"], 0, 5)
+    finally:
+        m.close()
+
+
+def test_no_held_full_embed_or_head(tmp_path):
+    gguf = build_tiny_gguf(os.path.join(tmp_path, "tiny.gguf"))
+    m = PagedQwen2(gguf, hot_budget_bytes=1024 * 1024)
+    try:
+        assert not hasattr(m, "embed") and not hasattr(m, "lm_head")
+        assert m.out_norm.shape == (16,)  # only the tiny final norm is held
+        text, ids = m.generate("ab a", max_tokens=4)
+        assert len(ids) == 4 and text
+    finally:
+        m.close()
