@@ -1,10 +1,11 @@
 # GPU executor core — design
 
-**Status (2026-10-25): core built, CPU-validated, CUDA unvalidated.**
+**Status (2026-10-26): core built, CPU-validated, CUDA validated on real weights (Gemma 31B parity v5 8/8, Kaggle T4; earlier synthetic CUDA generation check also passed).**
 `lacuna/gpu_executor.py` implements a single Qwen2 layer forward with
 pager-driven weight streaming and a hard VRAM budget. Full-model
-generation and `Engine` wiring are NOT in this file — they come later
-via the parent. Nothing here claims a GPU result: every GPU number in
+generation and `Engine` wiring are DONE (Engine mode `lacuna-gpu`,
+`GPUModel.generate` with `ttft_seconds` / `total_seconds` /
+`within_300s_bound`; Gemma and MoE paths added since). Nothing here claims a GPU result: every GPU number in
 this repo is either measured on a stated machine or labeled as what it
 is.
 
@@ -194,12 +195,11 @@ gap-4 decision, not used here.
    Q3_K / Q5_K heavy, so these kernels are the difference between a
    fast demo layer and a fast full model. Port order: Q6_K (simplest
    of the K family after Q4_K), then Q2_K/Q3_K/Q5_K.
-2. **Full-model generation + Engine wiring.** Single-layer forward
-   does not generate tokens. Wiring must reuse the pager's
-   `read_raw_tensor_bytes` per layer, the sliced embed/head pattern
-   from `paged_model` (never materialize either whole), and the KV
-   cache across layers — then the token-parity criterion above
-   becomes runnable.
+2. **Full-model generation + Engine wiring — DONE 2026-10-26.**
+   `GPUModel.generate` reuses the pager's `read_raw_tensor_bytes`
+   per layer with the sliced embed/head pattern and the KV cache
+   across layers; token parity is proven on real weights (Gemma 31B
+   v5 8/8).
 3. **Page-by-page upload.** Currently a matrix's raw bytes are
    concatenated on CPU, then uploaded in one H2D copy. Uploading page
    by page (2 MB chunks) would overlap H2D transfer with dequant and

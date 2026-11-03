@@ -96,6 +96,7 @@ class LacWriter:
         self._f.write(b"\x00" * HEADER_SIZE)  # placeholder, rewritten on close
         self._entries: list[tuple] = []
         self._names: list[str] = []
+        self._closed = False
 
     def add_tensor(
         self, name: str, arr: np.ndarray, layer: int = 0, precision: int = _q.Q2
@@ -177,33 +178,68 @@ class LacWriter:
         return tensor_id, total
 
     def close(self) -> None:
-        table_offset = self._f.tell()
-        for e in self._entries:
-            self._f.write(struct.pack(ENTRY_FMT, *e))
-        # name table
-        self._f.write(struct.pack("<I", len(self._names)))
-        for n in self._names:
-            b = n.encode("utf-8")
-            self._f.write(struct.pack("<I", len(b)) + b)
-        self._f.seek(0)
-        self._f.write(
-            struct.pack(
-                HEADER_FMT,
-                MAGIC,
-                VERSION,
-                self.page_size,
-                len(self._entries),
-                table_offset,
-                _POLICY_IDS[self.precision_policy],
+        """Finalize the file: entry table, name table, real header.
+
+        Idempotent — a second call is a no-op, so abort paths that already
+        released the handle cannot raise here. If the table/header write
+        itself fails, the handle is still closed (no fd leak) and the
+        error propagates: the file is incomplete and the caller deletes
+        it.
+        """
+        if self._closed:
+            return
+        try:
+            table_offset = self._f.tell()
+            for e in self._entries:
+                self._f.write(struct.pack(ENTRY_FMT, *e))
+            # name table
+            self._f.write(struct.pack("<I", len(self._names)))
+            for n in self._names:
+                b = n.encode("utf-8")
+                self._f.write(struct.pack("<I", len(b)) + b)
+            self._f.seek(0)
+            self._f.write(
+                struct.pack(
+                    HEADER_FMT,
+                    MAGIC,
+                    VERSION,
+                    self.page_size,
+                    len(self._entries),
+                    table_offset,
+                    _POLICY_IDS[self.precision_policy],
+                )
             )
-        )
-        self._f.close()
+        finally:
+            self._f.close()
+            self._closed = True
+
+    def discard(self) -> None:
+        """Release the handle WITHOUT finalizing: no entry table, no
+        header. The file stays visibly incomplete (zero header) and the
+        caller deletes it. Never raises — safe on abort paths."""
+        if self._closed:
+            return
+        try:
+            self._f.close()
+        except Exception:
+            pass
+        self._closed = True
 
     def __enter__(self):
         return self
 
-    def __exit__(self, *a):
-        self.close()
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.close()
+        else:
+            # An exception is already propagating: do NOT write the entry
+            # table / header here — that write can itself fail (e.g.
+            # EROFS on a filesystem that just went read-only) and mask
+            # the primary error in truncated logs. Just release the
+            # handle; the caller deletes the partial file. The original
+            # exception is never suppressed.
+            self.discard()
+        return False
 
 
 # ------------------------------------------------------------- reader ---

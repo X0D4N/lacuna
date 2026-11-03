@@ -8,7 +8,7 @@ This module is the bridge between a real GGUF model file and Lacuna's
    tensor index (name, dims, type, data offset). ``convert.parse_gguf_header``
    only *skips* the KV section; this parser *reads* it.
 2. **Dequantize** GGUF block formats (Q5_0, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K,
-   Q6_K, F16, F32) in float32,
+   Q6_K, F16, F32, BF16) in float32,
    mirroring the reference ``dequantize_row_*`` implementations in
    llama.cpp's ``ggml/src/ggml-quants.c`` operation for operation (same
    scale/min packing, same nibble order, same float32 arithmetic). A wrong
@@ -35,8 +35,8 @@ GGUF layout facts used here (v3, little-endian):
 - GGML type ids (this llama.cpp checkout's ggml.h — NOT the older numbering
   some references still show): F32=0, F16=1, Q4_0=2, Q4_1=3, Q5_0=6,
   Q5_1=7, Q8_0=8, Q8_1=9, Q2_K=10, Q3_K=11, Q4_K=12, Q5_K=13, Q6_K=14,
-  Q8_K=15. Decoded here: F32, F16, Q5_0, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K,
-  Q6_K; anything else raises loudly.
+  Q8_K=15, BF16=30. Decoded here: F32, F16, BF16, Q5_0, Q8_0, Q2_K, Q3_K,
+  Q4_K, Q5_K, Q6_K; anything else raises loudly.
 """
 
 from __future__ import annotations
@@ -59,6 +59,7 @@ _TYPE_INFO = {
     12: (256, 144, "q4_k"),  # Q4_K
     13: (256, 176, "q5_k"),  # Q5_K
     14: (256, 210, "q6_k"),  # Q6_K
+    30: (1, 2, "bf16"),      # BF16 (ggml.h: GGML_TYPE_BF16 = 30)
 }
 
 _KV_FMT = {
@@ -174,6 +175,21 @@ def dequant_f32(data: bytes, n: int) -> np.ndarray:
 
 def dequant_f16(data: bytes, n: int) -> np.ndarray:
     return _f16(np.frombuffer(data, dtype=np.uint8, count=n * 2)).copy()
+
+
+def dequant_bf16(data: bytes, n: int) -> np.ndarray:
+    """BF16 -> float32: exact by construction, not an approximation.
+
+    BF16 is float32 truncated to its top 16 bits (1 sign, 8 exponent,
+    7 mantissa bits), so widening is a left shift by 16 into the
+    float32 bit pattern — no rounding, no table, no arithmetic. This
+    mirrors ggml's ``ggml_bf16_to_fp32_row`` (verified bit-exact via
+    ctypes in tests/test_gguf.py, including NaN payloads, which survive
+    the shift intact). Never downcasts: the output is float32.
+    """
+    u32 = np.frombuffer(data, dtype="<u2", count=n).astype(np.uint32)
+    u32 <<= np.uint32(16)
+    return u32.view(np.float32).copy()
 
 
 def dequant_q5_0(data: bytes, n: int) -> np.ndarray:
@@ -428,7 +444,7 @@ def dequant_q6_k(data: bytes, n: int) -> np.ndarray:
     return out.reshape(-1)
 
 
-_DEQUANT = {0: dequant_f32, 1: dequant_f16, 6: dequant_q5_0, 8: dequant_q8_0, 10: dequant_q2_k, 11: dequant_q3_k, 12: dequant_q4_k, 13: dequant_q5_k, 14: dequant_q6_k}
+_DEQUANT = {0: dequant_f32, 1: dequant_f16, 6: dequant_q5_0, 8: dequant_q8_0, 10: dequant_q2_k, 11: dequant_q3_k, 12: dequant_q4_k, 13: dequant_q5_k, 14: dequant_q6_k, 30: dequant_bf16}
 
 
 def dequantize(data: bytes, ttype: int, n: int) -> np.ndarray:

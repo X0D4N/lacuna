@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 from lacuna.gguf import (
+    dequant_bf16,
     dequant_f16,
     dequant_f32,
     dequant_q2_k,
@@ -281,6 +282,38 @@ def test_k_quant_bit_exact_vs_ggml(fn_name, py_fn, block_bytes, d_offs):
     )
 
 
+@pytest.mark.skipif(
+    not os.path.exists(_LIBGGML), reason="libggml-base.so not present"
+)
+def test_bf16_bit_exact_vs_ggml():
+    """BF16 dequantizer vs ggml's own ``ggml_bf16_to_fp32_row`` via
+    ctypes. Compared as raw uint32 bit patterns, so NaN payloads
+    (which never compare equal as floats) are pinned too. Random
+    bytes plus pinned specials: +0, -0, 1.0, -1.0, +inf, -inf, a
+    quiet NaN, and a signaling-NaN payload."""
+    lib = ctypes.CDLL(_LIBGGML)
+    fn = lib.ggml_bf16_to_fp32_row
+    fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64]
+    fn.restype = None
+    rng = np.random.RandomState(99)
+    n = 64
+    raw = bytearray(rng.randint(0, 256, size=n * 2, dtype=np.uint8))
+    specials = [0x0000, 0x8000, 0x3F80, 0xBF80, 0x7F80, 0xFF80,
+                0x7FC0, 0x7F81]
+    for i, bits in enumerate(specials):
+        raw[2 * i:2 * i + 2] = struct.pack("<H", bits)
+    mine = dequant_bf16(bytes(raw), n)
+    ref = np.zeros(n, dtype=np.float32)
+    in_buf = ctypes.create_string_buffer(bytes(raw), len(raw))
+    out_buf = (ctypes.c_float * n).from_buffer(ref)
+    fn(ctypes.addressof(in_buf), ctypes.addressof(out_buf), n)
+    assert mine.shape == ref.shape
+    assert np.array_equal(mine.view("<u4"), ref.view("<u4")), (
+        "bf16 vs ggml bit mismatch at "
+        f"{np.where(mine.view('<u4') != ref.view('<u4'))[0][:8]}"
+    )
+
+
 def test_convert_passthrough_q2_k(tmp_path):
     # convert.py must NOT requantize or reject Q2_K: exact policy copies
     # raw bytes. Build a 1-tensor Q2_K GGUF, convert, read back through
@@ -312,6 +345,66 @@ def test_convert_passthrough_q2_k(tmp_path):
     got = read_tensor(store, {"name": "w2", "dims": [256, 2], "type": 10, "offset": 0})
     assert got.shape == (2, 256)
     assert np.array_equal(got.reshape(-1), dequant_q2_k(raw, 512))
+    store.close()
+
+
+# ------------------------------------------------------------- bf16 ---
+
+
+def _bf16_bits(f32_val: float) -> int:
+    """Top 16 bits of a float32 value — the BF16 encoding. Exact
+    values (1.0, -2.5, ...) round-trip exactly; the test pins the bit
+    pattern, not a decimal approximation."""
+    return struct.unpack("<I", struct.pack("<f", f32_val))[0] >> 16
+
+
+def test_bf16_hand_computed_values():
+    # Values exactly representable in BF16: widening is a shift, so
+    # the decoded float32 must equal the original bit-for-bit.
+    vals = [1.0, -2.5, 0.5, 3.0, 0.0, -0.0, 128.0, 0.25]
+    raw = b"".join(struct.pack("<H", _bf16_bits(v)) for v in vals)
+    got = dequant_bf16(raw, len(vals))
+    want = np.array(vals, dtype=np.float32)
+    assert np.array_equal(got.view("<u4"), want.view("<u4"))
+    # tensor_nbytes via _TYPE_INFO: 1 element, 2 bytes.
+    assert tensor_nbytes({"name": "w", "dims": [4, 2], "type": 30,
+                          "offset": 0}) == 16
+
+
+def test_bf16_gguf_roundtrip_through_pager(tmp_path):
+    """Synthetic BF16 GGUF -> .lac conversion (exact policy, bytes
+    copied verbatim) -> read_tensor through the pager. The decoded
+    tensor must equal the BF16 widening of the written values."""
+    import os
+
+    from lacuna.convert import convert as _convert
+    from lacuna.gguf import read_tensor
+    from lacuna.pager import PagedWeightStore
+
+    vals = np.array([[1.0, -2.5, 0.5, 3.0],
+                     [0.0, -0.0, 128.0, 0.25]], dtype=np.float32)
+    raw = b"".join(struct.pack("<H", _bf16_bits(float(v)))
+                    for v in vals.reshape(-1))
+    path = os.path.join(tmp_path, "b.gguf")
+    data = b"GGUF" + struct.pack("<I", 3)
+    data += struct.pack("<Q", 1) + struct.pack("<Q", 0)  # 1 tensor, 0 kv
+    name = b"w2"
+    data += struct.pack("<Q", len(name)) + name
+    data += struct.pack("<I", 2)
+    data += struct.pack("<Q", 4) + struct.pack("<Q", 2)  # dims [4, 2]
+    data += struct.pack("<I", 30)  # BF16
+    data += struct.pack("<Q", 0)
+    pad = (-len(data)) % 32
+    data += b"\x00" * pad + raw
+    with open(path, "wb") as f:
+        f.write(data)
+    lac = path + ".lac"
+    _convert(path, lac, quiet=True)
+    store = PagedWeightStore(lac, hot_budget_bytes=4 * 1024 * 1024)
+    got = read_tensor(store, {"name": "w2", "dims": [4, 2], "type": 30,
+                              "offset": 0})
+    assert got.shape == (2, 4)
+    assert np.array_equal(got.view("<u4"), vals.view("<u4"))
     store.close()
 
 

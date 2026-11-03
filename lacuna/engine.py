@@ -52,6 +52,16 @@ What is an INTEGRATION POINT (not implemented on this box)
      it (greedy decoding) and reports mode ``"libllama-dense"``. This is
      dense inference inside the llama.cpp process — it does NOT route
      through Lacuna's pager — and it is labeled as such everywhere.
+  3. **GPU paged path** (``lacuna.gpu_executor.GPUModel``, mode
+     ``"lacuna-gpu"``): IMPLEMENTED 2026-10-25. Full-model Qwen2
+     generation through the pager on a torch-CUDA or numpy backend;
+     request it with ``Engine(path, gpu="cuda"|"auto"|"numpy")``. See
+     ``docs/GPU_EXECUTOR_DESIGN.md`` for the backend decision, the
+     floor arithmetic, and the Kaggle GPU test results. Gemma-4
+     files dispatch to ``lacuna.gpu_executor.GPUGemmaModel`` in the
+     same mode (hybrid sliding/global attention, V = K, full-dim
+     global RoPE with stored rope_freqs, GELU-tanh MLP); see
+     ``docs/GEMMA4_31B.md``.
 
 See integrations/llama.cpp/INTEGRATION.md for the ggml backend hook design.
 """
@@ -428,8 +438,9 @@ class Engine:
     ``$LACUNA_LLAMA_SERVER``, or via the ``llama_server=`` argument):
     generation is then llama.cpp dense inference through
     :class:`LlamaServerBackend` and ``mode`` reads ``"libllama-dense"``.
-    Without a binary, a supported architecture (currently Qwen2, see
-    :mod:`lacuna.paged_model`) runs through the real paged executor and
+    Without a binary, a supported architecture (Qwen2, see
+    :mod:`lacuna.paged_model`, or Gemma-4, see :mod:`lacuna.gemma`) runs
+    through the real paged executor and
     ``mode`` reads ``"lacuna"`` — genuine model output with every weight
     byte faulted through the pager. If the paged executor cannot load
     the model (unsupported architecture, missing tensors, bad file), the
@@ -438,6 +449,18 @@ class Engine:
     model's transformer math, so its text is a simulation of generation —
     always labeled ``[simulated]``, never presented as the model's own
     output. The fallback reason is kept inspectable on ``paged_error``.
+
+    With ``gpu="cuda"``, ``"auto"``, or ``"numpy"``, a real model file
+    instead runs through :class:`lacuna.gpu_executor.GPUModel` and
+    ``mode`` reads ``"lacuna-gpu"``: full-model generation through the
+    pager on a torch-CUDA backend (``"cuda"`` demands CUDA and raises
+    instead of falling back), the same backend when present
+    (``"auto"``), or the numpy backend (``"numpy"``, the CPU-executable
+    GPU-mode math used by tests). ``vram_budget_bytes`` caps device
+    memory (default 4 GiB); a breach raises instead of spilling. The
+    last generation's end-response timings are on ``gpu_stats``
+    (time-to-first-token, total seconds, tok/s, and whether the
+    32-token response stayed within the 300 s bound).
 
     ``exact=True`` (default): the exactness guarantee — output identical to
     the dense baseline by construction; the oracle only schedules prefetches.
@@ -458,6 +481,8 @@ class Engine:
         precision_policy: str | None = None,
         warm_start: bool = True,
         llama_server: str | None = None,
+        gpu: str | None = None,
+        vram_budget_bytes: int | None = None,
     ):
         self.hw = hardware or detect_hardware()
         self.model_path = model_path
@@ -472,6 +497,11 @@ class Engine:
         self._backend: LlamaServerBackend | None = None
         self._paged: PagedQwen2 | None = None
         self.paged_error: Exception | None = None
+        self.gpu_mode = gpu
+        self._gpu = None
+        self.gpu_error: Exception | None = None
+        self.gpu_stats: dict | None = None
+        self.gpu_backend: str | None = None
         self._real_file = False  # a real model file was loaded from disk
         self.libllama = _try_load_libllama()
 
@@ -486,24 +516,154 @@ class Engine:
                     gguf_path,
                     hot_budget_bytes=int(self.hw.ram_hot_budget_gb * 1024**3),
                 )
-            except (PagedModelError, ValueError, OSError, KeyError) as exc:
-                self.paged_error = exc
-                return False
+            except (PagedModelError, ValueError, OSError, KeyError) as qwen_err:
+                # Not a Qwen2 file: try the Gemma-4 paged executor before
+                # giving up to the simulated path. The reported error is
+                # the one for the file's actual architecture when known.
+                try:
+                    from .gemma import GemmaModelError, PagedGemma4
+
+                    self._paged = PagedGemma4(
+                        gguf_path,
+                        hot_budget_bytes=int(
+                            self.hw.ram_hot_budget_gb * 1024**3
+                        ),
+                    )
+                except (GemmaModelError, ValueError, OSError, KeyError) as gemma_err:
+                    try:
+                        from .gguf import parse_gguf as _parse
+
+                        _arch, _, _ = _parse(gguf_path)
+                        self.paged_error = (
+                            gemma_err if _arch.get("general.architecture") == "gemma4"
+                            else qwen_err
+                        )
+                    except Exception:
+                        self.paged_error = qwen_err
+                    return False
             self.mode = "lacuna"
+            return True
+
+        def _try_gpu(gguf_path: str) -> bool:
+            """GPU paged path (mode "lacuna-gpu"). On failure the reason
+            is kept on gpu_error and the caller falls through to the
+            existing chain — except when gpu == "cuda", which demands
+            CUDA and raises instead of silently degrading."""
+            from .gpu_executor import (
+                GPUExecutorError,
+                GPUModel,
+                NumpyBackend,
+                TorchBackend,
+                detect_backend,
+            )
+
+            try:
+                if gpu == "cuda":
+                    backend = TorchBackend("cuda")
+                elif gpu == "numpy":
+                    backend = NumpyBackend()
+                else:  # "auto" or any other value
+                    backend, _info = detect_backend("auto")
+                # Gemma-4 files go to the Gemma GPU model, not the
+                # Qwen2/MoE GPUModel (which raises on gemma4). The
+                # header peek is cheap; on peek failure the call
+                # below raises its own load error as before.
+                try:
+                    from .gguf import parse_gguf as _parse_gguf
+
+                    _md, _, _ = _parse_gguf(gguf_path)
+                    _arch = _md.get("general.architecture")
+                except Exception:
+                    _arch = None
+                if _arch == "gemma4":
+                    from .gpu_executor import GPUGemmaModel
+
+                    self._gpu = GPUGemmaModel.from_gguf(
+                        gguf_path,
+                        backend=backend,
+                        hot_budget_bytes=int(
+                            self.hw.ram_hot_budget_gb * 1024**3
+                        ),
+                        vram_budget_bytes=int(vram_budget_bytes)
+                        if vram_budget_bytes
+                        else 4 * 1024**3,
+                    )
+                else:
+                    self._gpu = GPUModel.from_gguf(
+                        gguf_path,
+                        backend=backend,
+                        hot_budget_bytes=int(
+                            self.hw.ram_hot_budget_gb * 1024**3
+                        ),
+                        vram_budget_bytes=int(vram_budget_bytes)
+                        if vram_budget_bytes
+                        else 4 * 1024**3,
+                    )
+            except (
+                GPUExecutorError,
+                PagedModelError,
+                ValueError,
+                OSError,
+                KeyError,
+            ) as exc:
+                self.gpu_error = exc
+                return False
+            self.mode = "lacuna-gpu"
+            self.gpu_backend = (
+                f"{self._gpu.backend.name}:{self._gpu.backend.device}"
+            )
             return True
 
         if model_path.endswith(".lac") and os.path.exists(model_path):
             self._real_file = True
-            sibling = model_path[: -len(".lac")]
-            if not _try_paged(sibling):
+            # Two .lac naming conventions exist: pull/convert use
+            # splitext (model.gguf -> model.lac), while PagedQwen2's
+            # auto-convert appends (model.gguf -> model.gguf.lac).
+            # The sibling GGUF is the stripped stem when it already
+            # ends in .gguf, else the stem + .gguf. The old code used
+            # the bare stem unconditionally, so for pull-style .lac
+            # files _try_paged opened a nonexistent path, failed with
+            # FileNotFoundError, and Engine silently degraded to the
+            # [simulated] mock path even though mode read "lacuna"
+            # (CLI smoke on a pulled model printed mock gibberish).
+            # Prefer an existing candidate so a bare stem that does
+            # exist keeps its old behavior.
+            stem = model_path[: -len(".lac")]
+            candidates = (
+                [stem]
+                if stem.endswith(".gguf")
+                else [stem + ".gguf", stem]
+            )
+            sibling = next(
+                (c for c in candidates if os.path.exists(c)), candidates[0]
+            )
+            gpu_ok = (
+                _try_gpu(sibling)
+                if (gpu is not None and os.path.exists(sibling))
+                else False
+            )
+            if gpu_ok:
+                pass
+            elif gpu == "cuda":
+                raise RuntimeError(
+                    f"GPU mode demanded but unavailable: {self.gpu_error}"
+                )
+            elif not _try_paged(sibling):
                 self.store = PagedWeightStore(
                     model_path, hot_budget_bytes=int(self.hw.ram_hot_budget_gb * 1024**3)
                 )
                 self.mode = "lacuna"
         elif model_path.endswith(".gguf") and os.path.exists(model_path):
             self._real_file = True
+            gpu_ok = _try_gpu(model_path) if gpu is not None else False
             binary = _find_llama_server(llama_server)
-            if binary is not None:
+            if gpu_ok:
+                pass
+            elif gpu == "cuda":
+                raise RuntimeError(
+                    f"GPU mode demanded but unavailable: {self.gpu_error}"
+                )
+            elif binary is not None:
                 # Real inference: the actual model, served by llama.cpp.
                 self._backend = LlamaServerBackend(
                     model_path, server_binary=binary
@@ -538,6 +698,12 @@ class Engine:
     def generate(self, prompt: str, max_tokens: int = 32) -> str:
         if self._backend is not None:
             return self._backend.generate(prompt, max_tokens=max_tokens)
+        if self._gpu is not None:
+            text, _ids, stats = self._gpu.generate(
+                prompt, max_tokens=max_tokens
+            )
+            self.gpu_stats = stats
+            return text
         if self._paged is not None:
             text, _ = self._paged.generate(prompt, max_tokens=max_tokens)
             return text
@@ -558,6 +724,9 @@ class Engine:
         if self._backend is not None:
             self._backend.close()
             self._backend = None
+        if self._gpu is not None:
+            self._gpu.close()
+            self._gpu = None
         if self._paged is not None:
             self._paged.close()
             self._paged = None

@@ -134,6 +134,50 @@ def test_engine_uses_paged_for_supported_arch(tmp_path, monkeypatch):
         eng.close()
 
 
+def test_engine_uses_paged_for_lac_path(tmp_path, monkeypatch):
+    """Regression: Engine(<model>.lac) must find the sibling GGUF.
+
+    Two .lac naming conventions exist: pull/convert use splitext
+    (tiny.gguf -> tiny.lac) while PagedQwen2's auto-convert appends
+    (tiny.gguf -> tiny.gguf.lac). Engine used to strip ".lac" and use
+    the bare stem as the sibling, so for pull-style .lac files
+    _try_paged opened a nonexistent path, failed with
+    FileNotFoundError, and Engine silently degraded to the
+    [simulated] mock path while mode still read "lacuna" — the CLI
+    smoke on a pulled model printed mock gibberish instead of the
+    model's own output.
+    """
+    import lacuna.engine as engine_mod
+    from lacuna.convert import convert as _convert
+
+    monkeypatch.setattr(engine_mod, "_find_llama_server", lambda *a: None)
+    gguf = build_tiny_gguf(os.path.join(tmp_path, "tiny.gguf"))
+    # Pull-style: tiny.lac next to tiny.gguf.
+    lac_pull = os.path.join(tmp_path, "tiny.lac")
+    _convert(gguf, lac_pull, quiet=True)
+    eng = engine_mod.Engine(lac_pull)
+    try:
+        assert eng._paged is not None
+        assert eng.paged_error is None
+        assert eng.mode == "lacuna"
+        text = eng.generate("ab a", max_tokens=4)
+        assert text and not text.startswith("[simulated]")
+    finally:
+        eng.close()
+    # Append-style: tiny.gguf.lac next to tiny.gguf.
+    lac_append = gguf + ".lac"
+    _convert(gguf, lac_append, quiet=True)
+    eng = engine_mod.Engine(lac_append)
+    try:
+        assert eng._paged is not None
+        assert eng.paged_error is None
+        assert eng.mode == "lacuna"
+        text = eng.generate("ab a", max_tokens=4)
+        assert text and not text.startswith("[simulated]")
+    finally:
+        eng.close()
+
+
 def test_head_blocks_and_embed_rows_cached(tmp_path):
     # Sliced head/embed must go through the bounded _dq cache (the
     # pre-fix regression was re-dequantizing the head every token):

@@ -2,11 +2,15 @@
 """Kaggle GPU-kernel test for Lacuna's GPU executor core.
 
 What this measures (and what it does not): single-layer parity and
-latency on a real GPU. It does NOT measure full-model generation —
-`lacuna/gpu_executor.py` is single-layer by design, and token-vs-CPU
-generation parity becomes runnable only after Engine wiring. Any tok/s
-figure derived here from per-layer latency is an extrapolation and is
-labeled as such in the output JSON.
+latency on a real GPU, plus (section 5, added 2026-10-25) full-model
+generation parity on a synthetic tiny model: CUDA vs numpy backend
+token ids, time-to-first-token, and total time for a 32-token
+response. Section 5 is SYNTHETIC — it proves the generation wiring
+runs on CUDA and reports the end-response numbers, but its timing
+does NOT prove a real model meets the 300 s bound. Real-weight full
+generation via the wired Engine is the headline run's job, not this
+script's. Any tok/s figure derived here from per-layer latency is an
+extrapolation and is labeled as such in the output JSON.
 
 Launch (parent runs these; this script never launches itself):
   1. On a Kaggle GPU kernel (or any CUDA box), copy the whole lacuna
@@ -190,8 +194,8 @@ def main() -> int:
     repo = _ensure_lacuna_on_path(args.repo)
     from lacuna import gpu_executor as ge
     from lacuna.gpu_executor import (GGML_Q4_K, GGML_Q8_0, GPUExecutor,
-                                    GPULayer, LayerConfig, NumpyBackend,
-                                    TorchBackend)
+                                    GPULayer, GPUModel, LayerConfig,
+                                    NumpyBackend, TorchBackend, WeightRef)
 
     results: dict = {"repo": str(repo), "steps": {}}
 
@@ -339,6 +343,102 @@ def main() -> int:
             "pass": diff <= 1e-4}
         print(f"[gguf] layer-0 real-weight parity max_abs_diff={diff:.3e}")
 
+    # 5. Full-model generation, synthetic tiny model ------------------
+    # CUDA vs numpy backends on the SAME weights (GPUModel.from_arrays):
+    # ids must match; any flip is reported with its top-2 margin, and
+    # a wide-margin flip is a bug, not a tolerance. End-response
+    # numbers (TTFT + 32-token total) are recorded for the CUDA path;
+    # the pass line is the user's hard bound: 32 tokens within 300 s.
+    # On synthetic tiny weights this passes in seconds — the check is
+    # structural (fields present, check runs). Real-model timing is
+    # the headline run's measurement, using these same fields.
+    class _StubTok:
+        def __init__(self, vocab):
+            self._v = list(vocab)
+
+        def encode(self, text):
+            return [self._v.index(c) for c in text]
+
+        def decode(self, ids):
+            return "".join(self._v[i] for i in ids)
+
+    def _w(arr):
+        arr = np.ascontiguousarray(arr, dtype=np.float32)
+        return WeightRef(shape=arr.shape, array=arr)
+
+    gen_vocab = list("abcdefgh")
+    gcfg = LayerConfig(hidden=32, ffn=64, n_head=4, n_kv=2,
+                       eps=1e-5, rope_theta=10000.0)
+    gr = np.random.RandomState(7)
+
+    def _gmat(n_out, n_in):
+        return gr.normal(0.0, 0.1, size=(n_out, n_in)).astype(np.float32)
+
+    gen_embed = _gmat(len(gen_vocab), 32)
+    gen_head = _gmat(len(gen_vocab), 32)
+    gen_norm = np.ones(32, dtype=np.float32)
+    gen_layers = []
+    for _ in range(2):
+        gen_layers.append({
+            "attn_norm.weight": _w(np.ones(32, dtype=np.float32)),
+            "attn_q.weight": _w(_gmat(32, 32)),
+            "attn_q.bias": _w(gr.normal(0, 0.01, 32).astype(np.float32)),
+            "attn_k.weight": _w(_gmat(16, 32)),
+            "attn_k.bias": _w(gr.normal(0, 0.01, 16).astype(np.float32)),
+            "attn_v.weight": _w(_gmat(16, 32)),
+            "attn_v.bias": _w(gr.normal(0, 0.01, 16).astype(np.float32)),
+            "attn_output.weight": _w(_gmat(32, 32)),
+            "ffn_norm.weight": _w(np.ones(32, dtype=np.float32)),
+            "ffn_gate.weight": _w(_gmat(64, 32)),
+            "ffn_up.weight": _w(_gmat(64, 32)),
+            "ffn_down.weight": _w(_gmat(32, 64)),
+        })
+    gen_model_gpu = GPUModel.from_arrays(
+        gpu, gcfg, gen_embed, gen_head, gen_norm, gen_layers,
+        _StubTok(gen_vocab), eos=None)
+    gen_model_cpu = GPUModel.from_arrays(
+        cpu, gcfg, gen_embed, gen_head, gen_norm, gen_layers,
+        _StubTok(gen_vocab), eos=None)
+    _, ids_gpu, stats_gpu = gen_model_gpu.generate("ab", max_tokens=32)
+    _, ids_cpu, stats_cpu = gen_model_cpu.generate("ab", max_tokens=32)
+    ids_match = ids_gpu == ids_cpu
+    gen_row = {
+        "model": "synthetic tiny (2 layers, hidden 32, vocab 8)",
+        "prompt": "ab", "max_tokens": 32,
+        "tokens_generated_cuda": stats_gpu["tokens_generated"],
+        "ttft_seconds_cuda": stats_gpu["ttft_seconds"],
+        "total_seconds_cuda_32": stats_gpu["total_seconds"],
+        "tok_per_s_cuda": stats_gpu["tok_per_s_overall"],
+        "total_seconds_numpy_32": stats_cpu["total_seconds"],
+        "ids_match_cuda_vs_numpy": ids_match,
+        "first_flip_index": None,
+        "flip_margin_cuda": None,
+        "flip_margin_numpy": None,
+    }
+    if not ids_match:
+        flip = next(i for i, (a, b) in enumerate(zip(ids_gpu, ids_cpu))
+                    if a != b)
+        prefix = [0, 1] + ids_gpu[:flip]
+        lg = gen_model_gpu.forward(prefix, 0)
+        lc = gen_model_cpu.forward(prefix, 0)
+        srt = np.sort(lg)
+        gen_row["first_flip_index"] = flip
+        gen_row["flip_margin_cuda"] = float(srt[-1] - srt[-2])
+        srt = np.sort(lc)
+        gen_row["flip_margin_numpy"] = float(srt[-1] - srt[-2])
+        print(f"[gen] FLIP at token {flip}: cuda margin "
+              f"{gen_row['flip_margin_cuda']:.3e}, numpy margin "
+              f"{gen_row['flip_margin_numpy']:.3e} "
+              f"(wide margin = bug, near-tie = float noise)")
+    gen_row["pass"] = bool(
+        ids_match and stats_gpu["total_seconds"] <= 300.0
+        and stats_gpu["tokens_generated"] == 32)
+    results["generation_synthetic"] = gen_row
+    print(f"[gen] cuda 32 tokens: ttft={stats_gpu['ttft_seconds']:.3f}s "
+          f"total={stats_gpu['total_seconds']:.3f}s "
+          f"tok/s={stats_gpu['tok_per_s_overall']:.2f} "
+          f"ids_match={ids_match} pass={gen_row['pass']}")
+
     Path(args.out).write_text(json.dumps(results, indent=2))
     print(f"[done] wrote {args.out}")
 
@@ -346,6 +446,8 @@ def main() -> int:
     failed += [r for r in layer_rows if r.get("parity_pass") is False]
     if args.gguf and not results["real_weight_layer0"]["pass"]:
         failed.append(results["real_weight_layer0"])
+    if not gen_row["pass"]:
+        failed.append(gen_row)
     if failed:
         print(f"[FAIL] {len(failed)} criterion/criteria failed")
         return 1
