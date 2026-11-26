@@ -1,6 +1,6 @@
 # Lacuna
 
-[![CI](https://github.com/CYPHERLYNX/lacuna/actions/workflows/ci.yml/badge.svg)](https://github.com/CYPHERLYNX/lacuna/actions/workflows/ci.yml)
+[![CI](https://github.com/X0D4N/lacuna/actions/workflows/ci.yml/badge.svg)](https://github.com/X0D4N/lacuna/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
@@ -88,7 +88,7 @@ target budgets 256 MB page + 256 MB dequant, draft 128 MB + 128 MB):
 Python 3.10 or newer. The only runtime dependency is numpy.
 
 ```bash
-git clone https://github.com/CYPHERLYNX/lacuna.git && cd lacuna
+git clone https://github.com/X0D4N/lacuna.git && cd lacuna
 pip install .            # or: pip install -e .  for an editable install
 ```
 
