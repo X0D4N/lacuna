@@ -1,6 +1,7 @@
 """API tests: one-line Engine, HTTP endpoints, MCP stdio smoke test."""
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -111,7 +112,7 @@ def test_mcp_stdio_smoke():
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         text=True,
-        cwd="/home/hatch/workspace/lacuna",
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     )
     msgs = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},

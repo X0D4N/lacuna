@@ -74,10 +74,10 @@ at 83.7 / 25.8 t/s and then waited for interactive input.
 
 ```python
 import os
-os.environ["LACUNA_LLAMA_SERVER"] = "/home/hatch/workspace/tools/llama.cpp/build/bin/llama-server"
+os.environ["LACUNA_LLAMA_SERVER"] = "~/workspace/tools/llama.cpp/build/bin/llama-server"
 from lacuna.engine import Engine
 
-eng = Engine("/home/hatch/workspace/lacuna-models/qwen2.5-0.5b-instruct-q4_k_m.gguf")
+eng = Engine("~/workspace/lacuna-models/qwen2.5-0.5b-instruct-q4_k_m.gguf")
 eng.generate("<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n", max_tokens=64)
 ```
 
@@ -105,9 +105,9 @@ the baseline.
 
 ```bash
 printf '<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n' \
-  | LACUNA_LLAMA_SERVER=/home/hatch/workspace/tools/llama.cpp/build/bin/llama-server \
+  | LACUNA_LLAMA_SERVER=~/workspace/tools/llama.cpp/build/bin/llama-server \
     PYTHONPATH=~/workspace/lacuna \
-    /home/hatch/workspace/ai-tools/corsac/.venv/bin/python -m lacuna.cli run \
+    python -m lacuna.cli run \
     ~/workspace/lacuna-models/qwen2.5-0.5b-instruct-q4_k_m.gguf --max-tokens 64
 ```
 
@@ -145,7 +145,7 @@ single runs on a shared VM, not benchmarks.
 ## Tests
 
 ```
-PYTHONPATH=~/workspace/lacuna /home/hatch/workspace/ai-tools/corsac/.venv/bin/python -m pytest ~/workspace/lacuna/tests/ -q
+PYTHONPATH=~/workspace/lacuna python -m pytest ~/workspace/lacuna/tests/ -q
 195 passed, 1 skipped in 35.26s
 ```
 

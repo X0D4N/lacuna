@@ -14,12 +14,9 @@ is against the working tree, not HEAD. `docs/GPU_EXECUTOR_DESIGN.md`
 is stale in the same way (it still says full-model generation is
 unwired); do not quote it over the code.
 
-Serena: project `lacuna` is registered at
-`~/workspace/lacuna/.serena/project.yml` (python LSP). This
-subagent shell has no MCP transport for Serena's symbol tools,
-so the audit used the registered project structure plus direct
-code reading (AST symbol lists, grep, test runs) — not faked
-Serena calls.
+Serena: its symbol tools were not available in this audit shell,
+so the audit used direct code reading (AST symbol lists, grep,
+test runs), not faked Serena calls.
 
 ## Audit findings (verified, not assumed)
 
