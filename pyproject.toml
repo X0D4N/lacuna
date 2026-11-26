@@ -17,7 +17,7 @@ dependencies = ["numpy>=1.24"]
 lacuna = "lacuna.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/CYPHERLYNX/lacuna"
+Homepage = "https://github.com/X0D4N/lacuna"
 
 [tool.setuptools.packages.find]
 include = ["lacuna*", "simulator*"]
