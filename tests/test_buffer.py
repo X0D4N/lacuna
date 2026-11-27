@@ -208,7 +208,7 @@ def test_tiled_exact_matches_dense(store):
     outs, report = tiled_exact_matvec(buf, _names(), x)
     assert report["guarantee_held"] is True
     assert report["faults"] == 2 * _LAYERS  # MEASURED: every tile faulted once
-    for out, d, n in zip(outs, dense, _names()):
+    for out, d, n in zip(outs, dense, _names(), strict=True):
         ref = _rowwise_ref(d, x, np.ones(_ROWS, bool), _pages_of(store, n))
         assert np.array_equal(out, ref)  # bit-identical per tile
         assert np.allclose(out, d @ x, rtol=1e-5, atol=1e-7)
@@ -236,7 +236,7 @@ def test_tiled_sparse_mask_saves_faults_keeps_exactness(store):
     )
     assert report["guarantee_held"] is True
     assert report["faults"] == _LAYERS  # MEASURED: one page per tile, not two
-    for out, d, m, n in zip(outs, dense, masks, _names()):
+    for out, d, m, n in zip(outs, dense, masks, _names(), strict=True):
         ref = _rowwise_ref(d, x, m, _pages_of(store, n))
         assert np.array_equal(out, ref)
         assert np.all(out[~m] == 0.0)

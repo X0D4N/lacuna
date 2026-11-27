@@ -1,6 +1,5 @@
 """Ordo — routing automaton tests (lacuna/ordo.py)."""
 
-import json
 import random
 
 import pytest

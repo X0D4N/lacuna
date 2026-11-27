@@ -77,7 +77,7 @@ class SPMTokenizer:
         self.eos = eos
         # Special pieces (control / user-defined) matched literally.
         self._specials = sorted(
-            (t for t, ty in zip(self.tokens, self.types)
+            (t for t, ty in zip(self.tokens, self.types, strict=False)
              if ty in (_T_CONTROL, _T_USER_DEFINED)),
             key=len, reverse=True,
         )

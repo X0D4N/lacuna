@@ -37,7 +37,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import Protocol, runtime_checkable
 
 from .http_util import (

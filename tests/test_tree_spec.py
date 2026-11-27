@@ -4,7 +4,6 @@ The proof: accepted tokens must EQUAL plain target-only greedy decoding for
 the same seed (the deterministic mock target makes this checkable).
 """
 
-import numpy as np
 
 from lacuna.engine import _mock_target_step
 from lacuna.speculate import speculative_tree_generate
@@ -21,7 +20,6 @@ def _greedy(seed, n):
 
 def _draft_tree(prefix, depth, branching):
     """Tree containing the true greedy chain plus distractor branches."""
-    rng = np.random.default_rng(123)
     tree = {}
     # true greedy chain up to depth
     p, chain = list(prefix), []

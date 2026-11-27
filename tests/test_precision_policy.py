@@ -14,7 +14,6 @@ import pytest
 from lacuna import quant as q
 from lacuna.pager import (
     ENTRY_FMT,
-    ENTRY_SIZE,
     HEADER_SIZE_V1,
     MAGIC,
     LacWriter,

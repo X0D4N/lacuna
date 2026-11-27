@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING
 
 from .http_util import (

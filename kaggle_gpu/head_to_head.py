@@ -188,7 +188,6 @@ def run_airllm(model: str, prompt: str, max_tokens: int) -> dict:
         return {"status": "not_available", "error": f"airllm not installed: {exc}",
                 "source": "measured"}
     try:
-        import torch
 
         m = AutoModel.from_pretrained(model)
         inputs = m.tokenizer(prompt, return_tensors="pt",

@@ -29,7 +29,7 @@ def trained():
     m = TinyLM(cfg=SMALL, seed=7)
     opt = m.new_optimizer()
     rng = np.random.default_rng(3)
-    for i in range(40):
+    for _ in range(40):
         js = rng.integers(0, len(ids) - 33, 8)
         bb = np.stack([ids[j : j + 33] for j in js])
         m.train_step(bb, opt, 3e-3)

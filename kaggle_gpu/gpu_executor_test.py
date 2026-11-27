@@ -146,7 +146,7 @@ def _synthetic_refs(rng: np.random.RandomState, cfg, q4k: bool):
         return WeightRef(shape=tuple(shape), raw=raw, ttype=GGML_Q4_K)
 
     mk = ref_q4k if q4k else ref_float
-    h, f, nh, nkv = cfg.hidden, cfg.ffn, cfg.n_head, cfg.n_kv
+    h, f, _nh, nkv = cfg.hidden, cfg.ffn, cfg.n_head, cfg.n_kv
     hd = cfg.head_dim
     return {
         "attn_norm.weight": mk((h,)),
@@ -193,8 +193,7 @@ def main() -> int:
 
     repo = _ensure_lacuna_on_path(args.repo)
     from lacuna import gpu_executor as ge
-    from lacuna.gpu_executor import (GGML_Q4_K, GGML_Q8_0, GPUExecutor,
-                                    GPULayer, GPUModel, LayerConfig,
+    from lacuna.gpu_executor import (GGML_Q4_K, GGML_Q8_0, GPULayer, GPUModel, LayerConfig,
                                     NumpyBackend, TorchBackend, WeightRef)
 
     results: dict = {"repo": str(repo), "steps": {}}
@@ -416,7 +415,7 @@ def main() -> int:
         "flip_margin_numpy": None,
     }
     if not ids_match:
-        flip = next(i for i, (a, b) in enumerate(zip(ids_gpu, ids_cpu))
+        flip = next(i for i, (a, b) in enumerate(zip(ids_gpu, ids_cpu, strict=True))
                     if a != b)
         prefix = [0, 1] + ids_gpu[:flip]
         lg = gen_model_gpu.forward(prefix, 0)

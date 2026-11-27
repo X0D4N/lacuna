@@ -41,7 +41,7 @@ def simulate_overlap(
     n = len(fetch_times)
     assert n == len(compute_times) and n == len(bytes_per_token) and n > 0
 
-    sequential = sum(f + c for f, c in zip(fetch_times, compute_times))
+    sequential = sum(f + c for f, c in zip(fetch_times, compute_times, strict=True))
 
     # overlapped timeline; latencies = completion time of each token's compute
     latencies = []

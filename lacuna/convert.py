@@ -145,7 +145,7 @@ def _kv_equal(a, b) -> bool:
             return True
         return a == b
     if isinstance(a, list) and isinstance(b, list):
-        return len(a) == len(b) and all(_kv_equal(x, y) for x, y in zip(a, b))
+        return len(a) == len(b) and all(_kv_equal(x, y) for x, y in zip(a, b, strict=True))
     return a == b
 
 
@@ -480,7 +480,7 @@ def _load_shards(paths):
                 f"split.no values {sorted(nos)} do not cover "
                 f"0..{len(nos) - 1} (missing shard?)"
             )
-        records = [r for _, r in sorted(zip(nos, records), key=lambda t: t[0])]
+        records = [r for _, r in sorted(zip(nos, records, strict=True), key=lambda t: t[0])]
     elif all(x is not None for x in fn_idxs):
         idxs = [i for i, _ in fn_idxs]
         if len(set(idxs)) != len(idxs):
@@ -495,7 +495,7 @@ def _load_shards(paths):
                 f"shard filename total {fn_total} disagrees with the "
                 f"{len(records)} shard file(s) given"
             )
-        records = [r for _, r in sorted(zip(idxs, records), key=lambda t: t[0])]
+        records = [r for _, r in sorted(zip(idxs, records, strict=True), key=lambda t: t[0])]
     elif any(x is not None for x in fn_idxs):
         raise ValueError(
             "some shard filenames carry -NNNNN-of-MMMMM numbering but "
