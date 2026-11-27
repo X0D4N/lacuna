@@ -19,23 +19,23 @@ import shutil
 import numpy as np
 import pytest
 
-from lacuna.convert import StreamingShardConverter, convert, convert_sharded
+from lacuna.convert import StreamingShardConverter, convert_sharded
 from lacuna.pager import LacWriter
-from lacuna.pull import (PullError, pick_gguf, pull, resolve_shard_set,
+from lacuna.pull import (pick_gguf, pull, resolve_shard_set,
                          _is_native)
 
 try:
     from tests.test_convert_sharded import (
-        _general_kv, _kv_int, _model_blobs, _read_back_exact,
-        _split_kv, _write_gguf, _write_sharded, _T_U16)
+        _general_kv, _model_blobs, _read_back_exact,
+        _split_kv, _write_gguf, _write_sharded)
     from tests.test_pull_sharded import (
-        _api_opener, _build_src, _fake_download, _siblings_for)
+        _api_opener, _fake_download, _siblings_for)
 except ImportError:  # run from inside tests/
     from test_convert_sharded import (
-        _general_kv, _kv_int, _model_blobs, _read_back_exact,
-        _split_kv, _write_gguf, _write_sharded, _T_U16)
+        _general_kv, _model_blobs, _read_back_exact,
+        _split_kv, _write_gguf, _write_sharded)
     from test_pull_sharded import (
-        _api_opener, _build_src, _fake_download, _siblings_for)
+        _api_opener, _fake_download, _siblings_for)
 
 # lacuna/__init__ rebinds the `lacuna.pull` package attribute to the pull()
 # function; import_module returns the real module, which monkeypatch needs.

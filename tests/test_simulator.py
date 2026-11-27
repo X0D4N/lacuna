@@ -6,7 +6,7 @@ from simulator.simulate import SCENARIOS, markdown_table, run_all
 
 
 def test_all_scenarios_finite_positive():
-    for key, (label, fn) in SCENARIOS.items():
+    for key, (_label, fn) in SCENARIOS.items():
         r = fn()
         assert math.isfinite(r["tok_per_s"]) and r["tok_per_s"] > 0, key
         assert math.isfinite(r["p99_latency_s"]) and r["p99_latency_s"] > 0, key

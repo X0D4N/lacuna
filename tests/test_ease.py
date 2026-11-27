@@ -210,13 +210,12 @@ def test_download_resume_sends_range_and_completes():
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         with open(dest, "wb") as f:  # simulate an interrupted download
             f.write(payload[:80_000])
-        seen = [h for p, h in _FakeHubHandler.received]
         download(url, dest)
         with open(dest, "rb") as f:
             assert f.read() == payload
         ranges = [h.get("Range") for _, h in _FakeHubHandler.received
                   if _.endswith("f.gguf")]
-        assert f"bytes=80000-" in ranges, f"no Range resume header: {ranges}"
+        assert "bytes=80000-" in ranges, f"no Range resume header: {ranges}"
     finally:
         srv.shutdown()
 
@@ -249,7 +248,7 @@ def test_progress_callback_fires_monotonic():
         assert seen, "progress never fired"
         assert seen[-1] == (100_000, 100_000)
         vals = [d for d, _ in seen]
-        assert all(b >= a for a, b in zip(vals, vals[1:])), "not monotonic"
+        assert all(b >= a for a, b in zip(vals, vals[1:], strict=False)), "not monotonic"
     finally:
         srv.shutdown()
 

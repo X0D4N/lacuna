@@ -132,9 +132,8 @@ def _try_load_libllama(path: str | None = None):
             continue
         # sanity: the symbol table must expose the core entry points
         try:
-            lib.llama_model_default_params
-            lib.llama_model_load_from_file
-            lib.llama_decode
+            for sym in ("llama_model_default_params", "llama_model_load_from_file", "llama_decode"):
+                getattr(lib, sym)
         except AttributeError:
             continue
         return lib

@@ -62,5 +62,5 @@ def test_torch_kquant_matches_gguf_exactly(ttype, block_bytes, name):
 @pytest.mark.parametrize("ttype,block_bytes,name", _CASES)
 def test_torch_kquant_rejects_non_multiple(ttype, block_bytes, name):
     backend = TorchBackend("cpu")
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         backend.dequantize(b"\x00" * block_bytes, ttype, 255)

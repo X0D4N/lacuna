@@ -8,10 +8,7 @@ import numpy as np
 import pytest
 
 from lacuna.recipes import (
-    FAMILIES,
     GATE_MAX_PREDICTED_DENSITY,
-    GATE_MIN_RECALL,
-    evaluate_dataset,
     format_report,
     gate_report,
     get_family,
@@ -158,7 +155,6 @@ def test_quick_spec_scales_down():
 
 
 def test_cli_oracle_recipe_list(capsys):
-    import argparse
     from lacuna.cli import _cmd_oracle_recipe, build_parser
     a = build_parser().parse_args(["oracle-recipe", "--list-families"])
     assert _cmd_oracle_recipe(a) == 0
